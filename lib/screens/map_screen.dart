@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart' as geo;
@@ -19,8 +20,16 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   mb.MapboxMap? _map;
 
-  mb.PolygonAnnotationManager? _polyManager;
+  // Managers
+  mb.PolygonAnnotationManager? _currentMgr;
+  mb.PolygonAnnotationManager? _capturedMgr;
+
+  // Current tile polygon
   mb.PolygonAnnotation? _currentPoly;
+
+  // Captured polygons cache: hex -> polygon
+  final Map<String, mb.PolygonAnnotation> _capturedPolyByHex = {};
+  final Set<String> _visibleCapturedHex = {};
 
   // H3
   final h3.H3 _h3 = const h3.H3Factory().load();
@@ -29,22 +38,34 @@ class _MapScreenState extends State<MapScreen> {
   String _currentTile = 'unknown';
   bool _captured = false;
 
-  // v0.3 tracking
+  // Tracking
   StreamSubscription<geo.Position>? _posSub;
   bool _tracking = false;
   bool _followMe = true;
 
-  // v0.4 persistence
-  static const String _prefsKeyCaptured = 'captured_h3_cells_v1';
-  final Set<String> _capturedCellsHex = {}; // store H3 cell hex strings (lowercase)
+  // ---- v0.6 settings ----
+  // Option B: larger tiles
+  static const int h3Resolution = 9; // ~250m-ish
+  static const double renderRadiusMeters = 1500; // only show captured tiles within ~1.5km
 
-  // ~100m-ish grid for walking
-  static const int walkResolution = 10;
+  // Persistence (separate key per resolution so res10 data doesn't conflict)
+  static const String _prefsKeyCaptured = 'captured_h3_cells_res9_v1';
+  final Set<String> _capturedCellsHex = {}; // lowercase hex strings
+
+  // Cache centroids for distance checks: hex -> (lat,lng)
+  final Map<String, ({double lat, double lng})> _centroidCache = {};
 
   // Mapbox expects ARGB int colors
   static const int _colorUncaptured = 0xFF3498DB; // blue
   static const int _colorCaptured = 0xFF2ECC71; // green
   static const int _outlineColor = 0xFF000000;
+
+  // Removed unused _mapReady
+
+  // Simulate-walk path state (so it keeps expanding)
+  int _simStep = 0;
+  double? _simBaseLat;
+  double? _simBaseLng;
 
   @override
   void initState() {
@@ -59,6 +80,7 @@ class _MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
+  // ---------------- Persistence ----------------
   Future<void> _loadCapturedFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_prefsKeyCaptured);
@@ -72,13 +94,12 @@ class _MapScreenState extends State<MapScreen> {
           _capturedCellsHex.add(item.toLowerCase());
         }
       }
-      if (mounted) {
-        // no UI change required right now except future tiles will show captured
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     } catch (_) {
-      // If something got corrupted, ignore it (we can reset later)
+      // ignore corrupted data
     }
+
+    // If map is ready and we already have a position, visible tiles will be drawn on next _applyLatLng
   }
 
   Future<void> _saveCapturedToPrefs() async {
@@ -87,37 +108,154 @@ class _MapScreenState extends State<MapScreen> {
     await prefs.setString(_prefsKeyCaptured, jsonEncode(list));
   }
 
-  Future<void> _ensurePolygonManager() async {
+  // ---------------- Mapbox managers ----------------
+  Future<void> _ensureManagers() async {
     if (_map == null) return;
-    if (_polyManager != null) return;
-    _polyManager = await _map!.annotations.createPolygonAnnotationManager();
+
+    if (_currentMgr == null) {
+      _currentMgr = await _map!.annotations.createPolygonAnnotationManager();
+    }
+    if (_capturedMgr == null) {
+      _capturedMgr = await _map!.annotations.createPolygonAnnotationManager();
+    }
   }
 
-  Future<void> _drawCellPolygon(h3.H3Index cell, {required bool captured}) async {
-    await _ensurePolygonManager();
-    if (_polyManager == null) return;
+  // ---------------- Geometry helpers ----------------
+  static double _degToRad(double d) => d * math.pi / 180.0;
 
-    if (_currentPoly != null) {
-      await _polyManager!.delete(_currentPoly!);
-      _currentPoly = null;
-    }
+  static double _haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+    const r = 6371000.0; // Earth radius meters
+    final dLat = _degToRad(lat2 - lat1);
+    final dLon = _degToRad(lon2 - lon1);
+
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_degToRad(lat1)) *
+            math.cos(_degToRad(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return r * c;
+  }
+
+  ({double lat, double lng}) _cellCentroid(h3.H3Index cell, String cellHexLower) {
+    final cached = _centroidCache[cellHexLower];
+    if (cached != null) return cached;
 
     final boundary = _h3.cellToBoundary(cell);
-    if (boundary.isEmpty) return;
+    if (boundary.isEmpty) {
+      // fallback
+      final fallback = (lat: 0.0, lng: 0.0);
+      _centroidCache[cellHexLower] = fallback;
+      return fallback;
+    }
 
+    double latSum = 0, lngSum = 0;
+    for (final p in boundary) {
+      latSum += p.lat;
+      lngSum += p.lon;
+    }
+
+    final centroid = (lat: latSum / boundary.length, lng: lngSum / boundary.length);
+    _centroidCache[cellHexLower] = centroid;
+    return centroid;
+  }
+
+  mb.PolygonAnnotationOptions _polygonOptionsForCell(
+    h3.H3Index cell, {
+    required bool captured,
+    double opacity = 0.25,
+  }) {
+    final boundary = _h3.cellToBoundary(cell);
     final ring = boundary.map((c) => mb.Position(c.lon, c.lat)).toList();
-    ring.add(ring.first); // close ring
+    if (ring.isNotEmpty) ring.add(ring.first);
 
-    final options = mb.PolygonAnnotationOptions(
+    return mb.PolygonAnnotationOptions(
       geometry: mb.Polygon(coordinates: [ring]),
-      fillOpacity: 0.35,
+      fillOpacity: opacity,
       fillColor: captured ? _colorCaptured : _colorUncaptured,
       fillOutlineColor: _outlineColor,
     );
-
-    _currentPoly = await _polyManager!.create(options);
   }
 
+  Future<void> _drawCurrentCell(h3.H3Index cell, {required bool captured}) async {
+    await _ensureManagers();
+    if (_currentMgr == null) return;
+
+    if (_currentPoly != null) {
+      await _currentMgr!.delete(_currentPoly!);
+      _currentPoly = null;
+    }
+
+    final options = _polygonOptionsForCell(cell, captured: captured, opacity: 0.40);
+    _currentPoly = await _currentMgr!.create(options);
+  }
+
+  Future<void> _setCapturedVisible(String hexLower, bool visible) async {
+    if (_capturedMgr == null) return;
+
+    if (visible) {
+      if (_visibleCapturedHex.contains(hexLower)) return;
+
+      // Create polygon if not already cached
+      final existing = _capturedPolyByHex[hexLower];
+      if (existing != null) {
+        // If we cached one but removed from visible, it means it was deleted.
+        // So treat as not existing.
+        _capturedPolyByHex.remove(hexLower);
+      }
+
+      // Create fresh polygon
+      final cell = BigInt.parse(hexLower, radix: 16);
+      final options = _polygonOptionsForCell(cell, captured: true, opacity: 0.22);
+      final poly = await _capturedMgr!.create(options);
+
+      _capturedPolyByHex[hexLower] = poly;
+      _visibleCapturedHex.add(hexLower);
+    } else {
+      if (!_visibleCapturedHex.contains(hexLower)) return;
+
+      final poly = _capturedPolyByHex[hexLower];
+      if (poly != null) {
+        await _capturedMgr!.delete(poly);
+        _capturedPolyByHex.remove(hexLower);
+      }
+      _visibleCapturedHex.remove(hexLower);
+    }
+  }
+
+  Future<void> _updateVisibleCapturedTiles({required double centerLat, required double centerLng}) async {
+    await _ensureManagers();
+    if (_capturedMgr == null) return;
+
+    // Determine which captured tiles should be visible within radius
+    final Set<String> shouldBeVisible = {};
+
+    for (final hexLower in _capturedCellsHex) {
+      try {
+        final cell = BigInt.parse(hexLower, radix: 16);
+        final c = _cellCentroid(cell, hexLower);
+          final d = _haversineMeters(centerLat, centerLng, c.lat, c.lng);
+        if (d <= renderRadiusMeters) {
+          shouldBeVisible.add(hexLower);
+        }
+      } catch (_) {
+        // skip malformed
+      }
+    }
+
+    // Show new ones
+    for (final hex in shouldBeVisible.difference(_visibleCapturedHex)) {
+      await _setCapturedVisible(hex, true);
+    }
+
+    // Hide far ones
+    for (final hex in _visibleCapturedHex.difference(shouldBeVisible).toList()) {
+      await _setCapturedVisible(hex, false);
+    }
+  }
+
+  // ---------------- Location ----------------
   Future<bool> _ensureLocationPermission() async {
     final serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -146,28 +284,32 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _applyLatLng(double lat, double lng, {required bool moveCamera}) async {
-    final cell = _h3.geoToCell(h3.GeoCoord(lat: lat, lon: lng), walkResolution);
+    final cell = _h3.geoToCell(h3.GeoCoord(lat: lat, lon: lng), h3Resolution);
     final cellHex = cell.toRadixString(16).toLowerCase();
 
-    // If tile unchanged, do nothing
     final prevHex = _currentCell?.toRadixString(16).toLowerCase();
-    if (prevHex != null && prevHex == cellHex) return;
+    if (prevHex != null && prevHex == cellHex) {
+      // Even if tile didn't change, keep visible set updated (helps follow camera)
+      await _updateVisibleCapturedTiles(centerLat: lat, centerLng: lng);
+      return;
+    }
 
     final isAlreadyCaptured = _capturedCellsHex.contains(cellHex);
 
     setState(() {
       _currentCell = cell;
-      _currentTile = 'H3-$walkResolution:$cellHex';
+      _currentTile = 'H3-$h3Resolution:$cellHex';
       _captured = isAlreadyCaptured;
     });
 
-    await _drawCellPolygon(cell, captured: isAlreadyCaptured);
+    await _drawCurrentCell(cell, captured: isAlreadyCaptured);
+    await _updateVisibleCapturedTiles(centerLat: lat, centerLng: lng);
 
     if (moveCamera) {
       _map?.flyTo(
         mb.CameraOptions(
           center: mb.Point(coordinates: mb.Position(lng, lat)),
-          zoom: 16.0,
+          zoom: 15.2,
         ),
         mb.MapAnimationOptions(duration: 650),
       );
@@ -190,12 +332,11 @@ class _MapScreenState extends State<MapScreen> {
     if (!ok) return;
 
     await _posSub?.cancel();
-
     setState(() => _tracking = true);
 
     const settings = geo.LocationSettings(
       accuracy: geo.LocationAccuracy.high,
-      distanceFilter: 10, // meters
+      distanceFilter: 15, // meters (slightly higher with larger tiles)
     );
 
     _posSub = geo.Geolocator.getPositionStream(locationSettings: settings).listen(
@@ -225,23 +366,33 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  // Simulate-walk: keeps moving farther each tap (no toggling between a few cells)
   Future<void> _simulateMove() async {
     final ok = await _ensureLocationPermission();
     if (!ok) return;
 
-    final pos = await geo.Geolocator.getCurrentPosition(
-      desiredAccuracy: geo.LocationAccuracy.high,
-    );
+    if (_simBaseLat == null || _simBaseLng == null) {
+      final pos = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.high,
+      );
+      _simBaseLat = pos.latitude;
+      _simBaseLng = pos.longitude;
+      _simStep = 0;
+    }
 
-    // Nudge ~15 meters north (rough)
-    final simLat = pos.latitude + 0.000135;
-    final simLng = pos.longitude;
+    const double stepMeters = 260; // larger tiles -> bigger step
+    const double dLat = stepMeters / 111000.0;
 
-    await _applyLatLng(simLat, simLng, moveCamera: true);
+    _simStep += 1;
+
+    final lat = _simBaseLat! + (_simStep * dLat);
+    final lng = _simBaseLng! + ((_simStep.isEven) ? 0.0020 : -0.0020);
+
+    await _applyLatLng(lat, lng, moveCamera: true);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Simulated ~15m move')),
+      SnackBar(content: Text('Simulated step $_simStep (~${stepMeters.toInt()}m)')),
     );
   }
 
@@ -250,7 +401,6 @@ class _MapScreenState extends State<MapScreen> {
 
     final cellHex = _currentCell!.toRadixString(16).toLowerCase();
 
-    // Already captured -> just show message
     if (_capturedCellsHex.contains(cellHex)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -263,7 +413,15 @@ class _MapScreenState extends State<MapScreen> {
     await _saveCapturedToPrefs();
 
     setState(() => _captured = true);
-    await _drawCellPolygon(_currentCell!, captured: true);
+
+    await _drawCurrentCell(_currentCell!, captured: true);
+
+    // Make sure the newly captured tile is visible if within radius
+    // (it will be within radius because it’s the current one)
+    await _updateVisibleCapturedTiles(
+      centerLat: _h3.cellToBoundary(_currentCell!).first.lat,
+      centerLng: _h3.cellToBoundary(_currentCell!).first.lon,
+    );
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -271,6 +429,7 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
     if (kMapboxAccessToken.isEmpty) {
@@ -310,7 +469,7 @@ class _MapScreenState extends State<MapScreen> {
           IconButton(
             onPressed: _simulateMove,
             icon: const Icon(Icons.directions_walk),
-            tooltip: 'Simulate move (~15m)',
+            tooltip: 'Simulate walk path',
           ),
         ],
       ),
@@ -324,10 +483,9 @@ class _MapScreenState extends State<MapScreen> {
             ),
             onMapCreated: (mapboxMap) async {
               _map = mapboxMap;
-              await _ensurePolygonManager();
+              await _ensureManagers();
             },
           ),
-
           Positioned(
             left: 16,
             right: 16,
@@ -357,9 +515,17 @@ class _MapScreenState extends State<MapScreen> {
                                   color: _tracking ? Colors.green : Colors.grey,
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 10),
                               Text(
                                 'Saved: ${_capturedCellsHex.length}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Visible: ${_visibleCapturedHex.length}',
                                 style: const TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w700,
