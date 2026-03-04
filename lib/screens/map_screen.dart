@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/mapbox.dart';
 
@@ -15,50 +17,12 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-    // Simulated position for movement
-    geo.Position? _simPosition;
-    static const double _moveDelta = 0.0005; // ~55m latitude
-
-    // Simulate movement by shifting position north-east
-    void _simulateMovement() {
-      setState(() {
-        if (_simPosition == null) {
-          // Start at Seattle center if not set
-          _simPosition = geo.Position(
-            latitude: 47.6062,
-            longitude: -122.3321,
-            timestamp: DateTime.now(),
-            accuracy: 1.0,
-            altitude: 0.0,
-            altitudeAccuracy: 1.0,
-            heading: 0.0,
-            headingAccuracy: 1.0,
-            speed: 0.0,
-            speedAccuracy: 1.0,
-          );
-        } else {
-          _simPosition = geo.Position(
-            latitude: _simPosition!.latitude + _moveDelta,
-            longitude: _simPosition!.longitude + _moveDelta,
-            timestamp: DateTime.now(),
-            accuracy: _simPosition!.accuracy,
-            altitude: _simPosition!.altitude,
-            altitudeAccuracy: _simPosition!.altitudeAccuracy,
-            heading: _simPosition!.heading,
-            headingAccuracy: _simPosition!.headingAccuracy,
-            speed: _simPosition!.speed,
-            speedAccuracy: _simPosition!.speedAccuracy,
-          );
-        }
-      });
-      // Apply the simulated position to the map and H3 logic
-      _applyPosition(_simPosition!, moveCamera: true);
-    }
   mb.MapboxMap? _map;
 
   mb.PolygonAnnotationManager? _polyManager;
   mb.PolygonAnnotation? _currentPoly;
 
+  // H3
   final h3.H3 _h3 = const h3.H3Factory().load();
   h3.H3Index? _currentCell;
 
@@ -69,6 +33,10 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<geo.Position>? _posSub;
   bool _tracking = false;
   bool _followMe = true;
+
+  // v0.4 persistence
+  static const String _prefsKeyCaptured = 'captured_h3_cells_v1';
+  final Set<String> _capturedCellsHex = {}; // store H3 cell hex strings (lowercase)
 
   // ~100m-ish grid for walking
   static const int walkResolution = 10;
@@ -82,12 +50,41 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     mb.MapboxOptions.setAccessToken(kMapboxAccessToken);
+    _loadCapturedFromPrefs();
   }
 
   @override
   void dispose() {
     _posSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadCapturedFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_prefsKeyCaptured);
+
+    if (raw == null || raw.trim().isEmpty) return;
+
+    try {
+      final List<dynamic> list = jsonDecode(raw) as List<dynamic>;
+      for (final item in list) {
+        if (item is String && item.isNotEmpty) {
+          _capturedCellsHex.add(item.toLowerCase());
+        }
+      }
+      if (mounted) {
+        // no UI change required right now except future tiles will show captured
+        setState(() {});
+      }
+    } catch (_) {
+      // If something got corrupted, ignore it (we can reset later)
+    }
+  }
+
+  Future<void> _saveCapturedToPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = _capturedCellsHex.toList()..sort();
+    await prefs.setString(_prefsKeyCaptured, jsonEncode(list));
   }
 
   Future<void> _ensurePolygonManager() async {
@@ -100,7 +97,6 @@ class _MapScreenState extends State<MapScreen> {
     await _ensurePolygonManager();
     if (_polyManager == null) return;
 
-    // Remove previous polygon
     if (_currentPoly != null) {
       await _polyManager!.delete(_currentPoly!);
       _currentPoly = null;
@@ -110,7 +106,7 @@ class _MapScreenState extends State<MapScreen> {
     if (boundary.isEmpty) return;
 
     final ring = boundary.map((c) => mb.Position(c.lon, c.lat)).toList();
-    ring.add(ring.first); // close
+    ring.add(ring.first); // close ring
 
     final options = mb.PolygonAnnotationOptions(
       geometry: mb.Polygon(coordinates: [ring]),
@@ -120,40 +116,6 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     _currentPoly = await _polyManager!.create(options);
-  }
-
-  // Used by both manual center and stream updates
-  Future<void> _applyPosition(geo.Position pos, {required bool moveCamera}) async {
-    final h3.H3Index cell = _h3.geoToCell(
-      h3.GeoCoord(lat: pos.latitude, lon: pos.longitude),
-      walkResolution,
-    );
-
-    // Only update when tile changes
-    if (_currentCell != null && cell == _currentCell) {
-      // Still optionally follow camera smoothly if you want (we skip to save battery).
-      return;
-    }
-
-    final String cellHex = cell.toRadixString(16);
-
-    setState(() {
-      _currentCell = cell;
-      _currentTile = 'H3-$walkResolution:$cellHex';
-      _captured = false;
-    });
-
-    await _drawCellPolygon(cell, captured: false);
-
-    if (moveCamera) {
-      _map?.flyTo(
-        mb.CameraOptions(
-          center: mb.Point(coordinates: mb.Position(pos.longitude, pos.latitude)),
-          zoom: 16.0,
-        ),
-        mb.MapAnimationOptions(duration: 650),
-      );
-    }
   }
 
   Future<bool> _ensureLocationPermission() async {
@@ -183,6 +145,35 @@ class _MapScreenState extends State<MapScreen> {
     return true;
   }
 
+  Future<void> _applyLatLng(double lat, double lng, {required bool moveCamera}) async {
+    final cell = _h3.geoToCell(h3.GeoCoord(lat: lat, lon: lng), walkResolution);
+    final cellHex = cell.toRadixString(16).toLowerCase();
+
+    // If tile unchanged, do nothing
+    final prevHex = _currentCell?.toRadixString(16).toLowerCase();
+    if (prevHex != null && prevHex == cellHex) return;
+
+    final isAlreadyCaptured = _capturedCellsHex.contains(cellHex);
+
+    setState(() {
+      _currentCell = cell;
+      _currentTile = 'H3-$walkResolution:$cellHex';
+      _captured = isAlreadyCaptured;
+    });
+
+    await _drawCellPolygon(cell, captured: isAlreadyCaptured);
+
+    if (moveCamera) {
+      _map?.flyTo(
+        mb.CameraOptions(
+          center: mb.Point(coordinates: mb.Position(lng, lat)),
+          zoom: 16.0,
+        ),
+        mb.MapAnimationOptions(duration: 650),
+      );
+    }
+  }
+
   Future<void> _centerOnMeOnce() async {
     final ok = await _ensureLocationPermission();
     if (!ok) return;
@@ -191,27 +182,25 @@ class _MapScreenState extends State<MapScreen> {
       desiredAccuracy: geo.LocationAccuracy.high,
     );
 
-    await _applyPosition(pos, moveCamera: true);
+    await _applyLatLng(pos.latitude, pos.longitude, moveCamera: true);
   }
 
   Future<void> _startTracking() async {
     final ok = await _ensureLocationPermission();
     if (!ok) return;
 
-    // Cancel any existing stream
     await _posSub?.cancel();
 
     setState(() => _tracking = true);
 
     const settings = geo.LocationSettings(
       accuracy: geo.LocationAccuracy.high,
-      distanceFilter: 10, // meters; tune later
+      distanceFilter: 10, // meters
     );
 
     _posSub = geo.Geolocator.getPositionStream(locationSettings: settings).listen(
       (pos) async {
-        // Update tile; only move camera if followMe is on
-        await _applyPosition(pos, moveCamera: _followMe);
+        await _applyLatLng(pos.latitude, pos.longitude, moveCamera: _followMe);
       },
       onError: (e) {
         if (!mounted) return;
@@ -236,16 +225,49 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _simulateMove() async {
+    final ok = await _ensureLocationPermission();
+    if (!ok) return;
+
+    final pos = await geo.Geolocator.getCurrentPosition(
+      desiredAccuracy: geo.LocationAccuracy.high,
+    );
+
+    // Nudge ~15 meters north (rough)
+    final simLat = pos.latitude + 0.000135;
+    final simLng = pos.longitude;
+
+    await _applyLatLng(simLat, simLng, moveCamera: true);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Simulated ~15m move')),
+    );
+  }
+
   Future<void> _captureCurrentTile() async {
     if (_currentCell == null) return;
 
-    setState(() => _captured = true);
+    final cellHex = _currentCell!.toRadixString(16).toLowerCase();
 
+    // Already captured -> just show message
+    if (_capturedCellsHex.contains(cellHex)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Already captured ✅')),
+      );
+      return;
+    }
+
+    _capturedCellsHex.add(cellHex);
+    await _saveCapturedToPrefs();
+
+    setState(() => _captured = true);
     await _drawCellPolygon(_currentCell!, captured: true);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Tile captured ✅')),
+      const SnackBar(content: Text('Tile captured ✅ (saved)')),
     );
   }
 
@@ -284,6 +306,11 @@ class _MapScreenState extends State<MapScreen> {
             onPressed: () => setState(() => _followMe = !_followMe),
             icon: Icon(_followMe ? Icons.gps_fixed : Icons.gps_not_fixed),
             tooltip: _followMe ? 'Follow: ON' : 'Follow: OFF',
+          ),
+          IconButton(
+            onPressed: _simulateMove,
+            icon: const Icon(Icons.directions_walk),
+            tooltip: 'Simulate move (~15m)',
           ),
         ],
       ),
@@ -330,6 +357,14 @@ class _MapScreenState extends State<MapScreen> {
                                   color: _tracking ? Colors.green : Colors.grey,
                                 ),
                               ),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Saved: ${_capturedCellsHex.length}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 4),
@@ -341,11 +376,6 @@ class _MapScreenState extends State<MapScreen> {
                     FilledButton(
                       onPressed: _currentTile == 'unknown' ? null : _captureCurrentTile,
                       child: Text(_captured ? 'Captured' : 'Capture'),
-                    ),
-                    const SizedBox(width: 12),
-                    FilledButton(
-                      onPressed: _simulateMovement,
-                      child: const Text('Simulate Move'),
                     ),
                   ],
                 ),
