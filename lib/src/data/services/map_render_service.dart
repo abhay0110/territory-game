@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
+import '../../../core/constants/game_colors.dart';
 import '../../../models/game_tile.dart';
 
 class MapRenderService {
@@ -25,10 +26,52 @@ class MapRenderService {
 
   Set<String> get visibleCapturedHex => _visibleCapturedHex;
 
-  static const int _colorUncaptured = 0xFF3498DB;
-  static const int _colorCaptured = 0xFF2ECC71;
-  static const int _colorOtherCaptured = 0xFFE67E22;
-  static const int _outlineColor = 0xFF000000;
+  static const int _colorMineProtected = GameColors.neonGreenArgb;
+  static const int _colorMineExpired = GameColors.myTileGreenArgb;
+  static const int _colorEnemyProtected = GameColors.rivalRedArgb;
+  static const int _colorEnemyCapturable = GameColors.rivalRedDarkArgb;
+  static const int _colorNeutral = GameColors.neutralGrayArgb;
+  static const int _outlineColor = GameColors.outlineDarkArgb;
+  static const int _enemyCapturableOutlineColor = GameColors.rivalOutlineDarkArgb;
+  static const int _currentOutlineColor = GameColors.currentBorderArgb;
+
+  ({int fillColor, double opacity, int outlineColor}) _styleForTile(
+    GameTile tile, {
+    required bool isCurrent,
+  }) {
+    final now = DateTime.now();
+    final isProtected =
+        tile.protectedUntil != null && tile.protectedUntil!.isAfter(now);
+
+    final fillColor = switch (tile.ownership) {
+      TileOwnership.mine =>
+        isProtected ? _colorMineProtected : _colorMineExpired,
+      TileOwnership.enemy =>
+        isProtected ? _colorEnemyProtected : _colorEnemyCapturable,
+      TileOwnership.neutral => _colorNeutral,
+    };
+
+    final opacity = switch (tile.ownership) {
+      TileOwnership.mine => isCurrent
+          ? (isProtected ? 0.52 : 0.42)
+          : (isProtected ? 0.34 : 0.24),
+      TileOwnership.enemy => isCurrent
+          ? (isProtected ? 0.50 : 0.40)
+          : (isProtected ? 0.32 : 0.20),
+      TileOwnership.neutral => isCurrent ? 0.36 : 0.18,
+    };
+
+    final baseOutline = switch (tile.ownership) {
+      TileOwnership.enemy => isProtected ? _outlineColor : _enemyCapturableOutlineColor,
+      _ => _outlineColor,
+    };
+
+    return (
+      fillColor: fillColor,
+      opacity: opacity,
+      outlineColor: isCurrent ? _currentOutlineColor : baseOutline,
+    );
+  }
 
   /// Attach the underlying Mapbox map instance to this service.
   ///
@@ -48,6 +91,7 @@ class MapRenderService {
   mb.PolygonAnnotationOptions _polygonOptionsForCell(
     h3lib.H3Index cell, {
     required int fillColor,
+    int outlineColor = _outlineColor,
     double opacity = 0.25,
   }) {
     final boundary = h3Instance.cellToBoundary(cell);
@@ -58,11 +102,11 @@ class MapRenderService {
       geometry: mb.Polygon(coordinates: [ring]),
       fillOpacity: opacity,
       fillColor: fillColor,
-      fillOutlineColor: _outlineColor,
+      fillOutlineColor: outlineColor,
     );
   }
 
-  Future<void> drawCurrentCell(h3lib.H3Index cell, {required bool captured}) async {
+  Future<void> drawCurrentCell(h3lib.H3Index cell, {required GameTile tile}) async {
     await _ensureManagers();
     if (_currentMgr == null) return;
 
@@ -71,34 +115,34 @@ class MapRenderService {
       _currentPoly = null;
     }
 
+    final style = _styleForTile(tile, isCurrent: true);
+
     final options = _polygonOptionsForCell(
       cell,
-      fillColor: captured ? _colorCaptured : _colorUncaptured,
-      opacity: 0.40,
+      fillColor: style.fillColor,
+      outlineColor: style.outlineColor,
+      opacity: style.opacity,
     );
 
     _currentPoly = await _currentMgr!.create(options);
   }
 
-  Future<void> setCapturedVisible(
-    String hexLower,
-    bool visible, {
-    required bool isMine,
-    required bool isLocalMine,
-  }) async {
+  Future<void> setCapturedVisible(GameTile tile, bool visible) async {
     await _ensureManagers();
     if (_capturedMgr == null) return;
 
+    final hexLower = tile.h3Index.toLowerCase();
+
     if (visible) {
       if (_visibleCapturedHex.contains(hexLower)) return;
-
-      final color = (isMine || isLocalMine) ? _colorCaptured : _colorOtherCaptured;
+      final style = _styleForTile(tile, isCurrent: false);
 
       final cell = BigInt.parse(hexLower, radix: 16);
       final options = _polygonOptionsForCell(
         cell,
-        fillColor: color,
-        opacity: 0.22,
+        fillColor: style.fillColor,
+        outlineColor: style.outlineColor,
+        opacity: style.opacity,
       );
 
       final poly = await _capturedMgr!.create(options);
@@ -120,8 +164,23 @@ class MapRenderService {
   Future<void> clearVisibleCaptured() async {
     final list = _visibleCapturedHex.toList();
     for (final hex in list) {
-      await setCapturedVisible(hex, false, isMine: false, isLocalMine: false);
+      await _setHexVisible(hex, false);
     }
+  }
+
+  Future<void> _setHexVisible(String hexLower, bool visible) async {
+    await _ensureManagers();
+    if (_capturedMgr == null) return;
+
+    if (visible) return;
+    if (!_visibleCapturedHex.contains(hexLower)) return;
+
+    final poly = _capturedPolyByHex[hexLower];
+    if (poly != null) {
+      await _capturedMgr!.delete(poly);
+      _capturedPolyByHex.remove(hexLower);
+    }
+    _visibleCapturedHex.remove(hexLower);
   }
 
   // ── Geometry helpers ──────────────────────────────────────────────────────
@@ -165,24 +224,20 @@ class MapRenderService {
     return centroid;
   }
 
-  /// Show/hide all captured tiles within [radiusMeters] of [centerLat]/[centerLng].
-  ///
-  /// Uses [capturedHexes] and [nearbyOwnerByHex] to determine colour.
+  /// Show/hide all tiles within [radiusMeters] of [centerLat]/[centerLng].
   Future<void> updateVisibleCapturedTiles({
     required double centerLat,
     required double centerLng,
     required double radiusMeters,
-    required Set<String> capturedHexes,
-    required Map<String, String> nearbyOwnerByHex,
-    required String? currentUserId,
+    required List<GameTile> tiles,
   }) async {
     await _ensureManagers();
     if (_capturedMgr == null) return;
 
-    final allKnownHexes = <String>{
-      ...capturedHexes,
-      ...nearbyOwnerByHex.keys,
+    final tileByHex = <String, GameTile>{
+      for (final tile in tiles) tile.h3Index.toLowerCase(): tile,
     };
+    final allKnownHexes = tileByHex.keys.toSet();
 
     final Set<String> shouldBeVisible = {};
     for (final hexLower in allKnownHexes) {
@@ -197,53 +252,38 @@ class MapRenderService {
     }
 
     for (final hex in shouldBeVisible.difference(_visibleCapturedHex)) {
-      final owner = nearbyOwnerByHex[hex];
-      final isMine = owner != null && owner == currentUserId;
-      final isLocalMine = capturedHexes.contains(hex);
-      await setCapturedVisible(hex, true, isMine: isMine, isLocalMine: isLocalMine);
+      final tile = tileByHex[hex];
+      if (tile != null) {
+        await setCapturedVisible(tile, true);
+      }
     }
 
     for (final hex in _visibleCapturedHex.difference(shouldBeVisible).toList()) {
-      await setCapturedVisible(hex, false, isMine: false, isLocalMine: false);
+      await _setHexVisible(hex, false);
     }
   }
 
-  /// Draws the current player tile from a hex string.
-  ///
-  /// [captured] controls whether the tile is coloured as owned or neutral.
-  Future<void> drawCurrentTile(String hexLower, {bool captured = false}) async {
-    final cell = BigInt.parse(hexLower, radix: 16);
-    await drawCurrentCell(cell, captured: captured);
+  /// Draws the current tile based on [GameTile] ownership/protection state.
+  Future<void> drawCurrentTile(GameTile tile) async {
+    final cell = BigInt.parse(tile.h3Index, radix: 16);
+    await drawCurrentCell(cell, tile: tile);
   }
 
   /// [MapController]-friendly overload: derives centre from [currentHex] and
   /// uses a [List<GameTile>] to determine ownership colouring.
   Future<void> updateVisibleCapturedTilesByHex({
     required String currentHex,
-    required List<GameTile> capturedTiles,
+    required List<GameTile> tiles,
     double radiusMeters = 1500,
   }) async {
     final hexBigInt = BigInt.parse(currentHex, radix: 16);
     final center = cellCentroid(hexBigInt, currentHex);
 
-    final capturedHexSet = capturedTiles
-        .where((t) => t.ownership == TileOwnership.mine)
-        .map((t) => t.h3Index)
-        .toSet();
-
-    // Enemy tiles get a placeholder owner so they render in the enemy colour.
-    final nearbyOwnerByHex = <String, String>{
-      for (final t in capturedTiles.where((t) => t.ownership == TileOwnership.enemy))
-        t.h3Index: 'other',
-    };
-
     await updateVisibleCapturedTiles(
       centerLat: center.lat,
       centerLng: center.lng,
       radiusMeters: radiusMeters,
-      capturedHexes: capturedHexSet,
-      nearbyOwnerByHex: nearbyOwnerByHex,
-      currentUserId: null,
+      tiles: tiles,
     );
   }
 
