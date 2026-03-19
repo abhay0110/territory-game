@@ -6,7 +6,7 @@ class GameColors {
   static const Color rivalRed = Color(0xFFFF4D4D);
   static const Color rivalRedDark = Color(0xFFC62828);
   static const Color rivalOutlineDark = Color(0xFF7F0000);
-  static const Color neutralGray = Color(0xFF777777);
+  static const Color neutralGray = Color(0xFF3D8BFF);
   static const Color currentBorder = Color(0xFFFFFFFF);
   static const Color hudBlack = Color(0x99000000);
 
@@ -15,7 +15,7 @@ class GameColors {
   static const int rivalRedArgb = 0xFFFF4D4D;
   static const int rivalRedDarkArgb = 0xFFC62828;
   static const int rivalOutlineDarkArgb = 0xFF7F0000;
-  static const int neutralGrayArgb = 0xFF777777;
+  static const int neutralGrayArgb = 0xFF3D8BFF;
   static const int currentBorderArgb = 0xFFFFFFFF;
   static const int outlineDarkArgb = 0xFF000000;
 

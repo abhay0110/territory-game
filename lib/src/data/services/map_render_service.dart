@@ -7,10 +7,7 @@ import '../../../core/constants/game_colors.dart';
 import '../../../models/game_tile.dart';
 
 class MapRenderService {
-  MapRenderService({
-    required this.h3Instance,
-    required this.h3Resolution,
-  });
+  MapRenderService({required this.h3Instance, required this.h3Resolution});
 
   final h3lib.H3 h3Instance;
   final int h3Resolution;
@@ -18,7 +15,13 @@ class MapRenderService {
   mb.MapboxMap? _map;
   mb.PolygonAnnotationManager? _currentMgr;
   mb.PolygonAnnotationManager? _capturedMgr;
+  mb.PolygonAnnotationManager? _selectionMgr;
+  mb.PolygonAnnotationManager? _recommendationHaloMgr;
+  mb.PolygonAnnotationManager? _recommendationMgr;
   mb.PolygonAnnotation? _currentPoly;
+  mb.PolygonAnnotation? _selectionPoly;
+  mb.PolygonAnnotation? _recommendationHaloPoly;
+  mb.PolygonAnnotation? _recommendationPoly;
 
   final Map<String, mb.PolygonAnnotation> _capturedPolyByHex = {};
   final Set<String> _visibleCapturedHex = {};
@@ -32,7 +35,8 @@ class MapRenderService {
   static const int _colorEnemyCapturable = GameColors.rivalRedDarkArgb;
   static const int _colorNeutral = GameColors.neutralGrayArgb;
   static const int _outlineColor = GameColors.outlineDarkArgb;
-  static const int _enemyCapturableOutlineColor = GameColors.rivalOutlineDarkArgb;
+  static const int _enemyCapturableOutlineColor =
+      GameColors.rivalOutlineDarkArgb;
   static const int _currentOutlineColor = GameColors.currentBorderArgb;
 
   ({int fillColor, double opacity, int outlineColor}) _styleForTile(
@@ -52,17 +56,16 @@ class MapRenderService {
     };
 
     final opacity = switch (tile.ownership) {
-      TileOwnership.mine => isCurrent
-          ? (isProtected ? 0.52 : 0.42)
-          : (isProtected ? 0.34 : 0.24),
-      TileOwnership.enemy => isCurrent
-          ? (isProtected ? 0.50 : 0.40)
-          : (isProtected ? 0.32 : 0.20),
-      TileOwnership.neutral => isCurrent ? 0.36 : 0.18,
+      TileOwnership.mine =>
+        isCurrent ? (isProtected ? 0.52 : 0.42) : (isProtected ? 0.34 : 0.24),
+      TileOwnership.enemy =>
+        isCurrent ? (isProtected ? 0.50 : 0.40) : (isProtected ? 0.32 : 0.20),
+      TileOwnership.neutral => isCurrent ? 0.48 : 0.30,
     };
 
     final baseOutline = switch (tile.ownership) {
-      TileOwnership.enemy => isProtected ? _outlineColor : _enemyCapturableOutlineColor,
+      TileOwnership.enemy =>
+        isProtected ? _outlineColor : _enemyCapturableOutlineColor,
       _ => _outlineColor,
     };
 
@@ -86,6 +89,12 @@ class MapRenderService {
 
     _currentMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _capturedMgr ??= await _map!.annotations.createPolygonAnnotationManager();
+    _selectionMgr ??= await _map!.annotations.createPolygonAnnotationManager();
+    // Halo must be created before ring so ring renders on top.
+    _recommendationHaloMgr ??=
+      await _map!.annotations.createPolygonAnnotationManager();
+    _recommendationMgr ??=
+      await _map!.annotations.createPolygonAnnotationManager();
   }
 
   mb.PolygonAnnotationOptions _polygonOptionsForCell(
@@ -106,7 +115,10 @@ class MapRenderService {
     );
   }
 
-  Future<void> drawCurrentCell(h3lib.H3Index cell, {required GameTile tile}) async {
+  Future<void> drawCurrentCell(
+    h3lib.H3Index cell, {
+    required GameTile tile,
+  }) async {
     await _ensureManagers();
     if (_currentMgr == null) return;
 
@@ -188,11 +200,16 @@ class MapRenderService {
   static double _degToRad(double d) => d * math.pi / 180.0;
 
   static double haversineMeters(
-      double lat1, double lon1, double lat2, double lon2) {
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
     const r = 6371000.0;
     final dLat = _degToRad(lat2 - lat1);
     final dLon = _degToRad(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_degToRad(lat1)) *
             math.cos(_degToRad(lat2)) *
             math.sin(dLon / 2) *
@@ -200,7 +217,10 @@ class MapRenderService {
     return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
   }
 
-  ({double lat, double lng}) cellCentroid(h3lib.H3Index cell, String cellHexLower) {
+  ({double lat, double lng}) cellCentroid(
+    h3lib.H3Index cell,
+    String cellHexLower,
+  ) {
     final cached = _centroidCache[cellHexLower];
     if (cached != null) return cached;
 
@@ -218,8 +238,10 @@ class MapRenderService {
       lngSum += p.lon;
     }
 
-    final centroid =
-        (lat: latSum / boundary.length, lng: lngSum / boundary.length);
+    final centroid = (
+      lat: latSum / boundary.length,
+      lng: lngSum / boundary.length,
+    );
     _centroidCache[cellHexLower] = centroid;
     return centroid;
   }
@@ -258,7 +280,8 @@ class MapRenderService {
       }
     }
 
-    for (final hex in _visibleCapturedHex.difference(shouldBeVisible).toList()) {
+    for (final hex
+        in _visibleCapturedHex.difference(shouldBeVisible).toList()) {
       await _setHexVisible(hex, false);
     }
   }
@@ -287,7 +310,113 @@ class MapRenderService {
     );
   }
 
+  /// Draws a selection ring (bright white/cyan outline, faint fill) around the
+  /// given [h3Index] to highlight the user-tapped tile.
+  Future<void> drawSelectionHex(String h3Index) async {
+    await _ensureManagers();
+    if (_selectionMgr == null) return;
+
+    if (_selectionPoly != null) {
+      await _selectionMgr!.delete(_selectionPoly!);
+      _selectionPoly = null;
+    }
+
+    try {
+      final cell = BigInt.parse(h3Index.toLowerCase(), radix: 16);
+      // Faint white fill + solid white outline to make the hex pop.
+      final options = _polygonOptionsForCell(
+        cell,
+        fillColor: 0x33FFFFFF,
+        outlineColor: 0xFFFFFFFF,
+        opacity: 0.20,
+      );
+      _selectionPoly = await _selectionMgr!.create(options);
+    } catch (_) {}
+  }
+
+  /// Removes the selection ring added by [drawSelectionHex].
+  Future<void> clearSelectionHex() async {
+    if (_selectionPoly == null || _selectionMgr == null) return;
+    await _selectionMgr!.delete(_selectionPoly!);
+    _selectionPoly = null;
+  }
+
+  // accentPrimary cyan: 0xFF49D6FF
+  static const int _accentPrimaryCyan = 0xFF49D6FF;
+  static const int _accentPrimaryCyanMuted = 0xFF2BAFD4;
+
+  /// Draws a two-layer glowing target ring for the recommended tile.
+  ///
+  /// Layer 1 (halo): soft cyan fill wash — provides glow halo feel.
+  /// Layer 2 (ring): brighter fill + crisp bright outline — the unmistakable ring.
+  Future<void> drawRecommendedHex(
+    String h3Index, {
+    required bool pulseOn,
+    bool strong = true,
+  }) async {
+    await _ensureManagers();
+    if (_recommendationMgr == null || _recommendationHaloMgr == null) return;
+
+    // Clear previous polys on both layers.
+    if (_recommendationHaloPoly != null) {
+      await _recommendationHaloMgr!.delete(_recommendationHaloPoly!);
+      _recommendationHaloPoly = null;
+    }
+    if (_recommendationPoly != null) {
+      await _recommendationMgr!.delete(_recommendationPoly!);
+      _recommendationPoly = null;
+    }
+
+    try {
+      final cell = BigInt.parse(h3Index.toLowerCase(), radix: 16);
+
+      // ── Layer 1: soft halo wash (below the ring) ────────────────────────
+      // Pulses between very transparent and faintly visible to create a
+      // gentle breathing glow backdrop beneath the crisp ring.
+      final haloOpacity = strong
+          ? (pulseOn ? 0.20 : 0.08)
+          : (pulseOn ? 0.12 : 0.05);
+      final haloOptions = _polygonOptionsForCell(
+        cell,
+        fillColor: _accentPrimaryCyan,
+        outlineColor: _accentPrimaryCyan, // blend outline into fill
+        opacity: haloOpacity,
+      );
+      _recommendationHaloPoly =
+          await _recommendationHaloMgr!.create(haloOptions);
+
+      // ── Layer 2: bright ring (on top of halo) ───────────────────────────
+      // Strong fill + vivid outline — makes the tile unmistakable as the
+      // first-action target even against a dark map background.
+      final ringOpacity = strong
+          ? (pulseOn ? 0.38 : 0.18)
+          : (pulseOn ? 0.22 : 0.10);
+      final ringOutline =
+          pulseOn ? _accentPrimaryCyan : _accentPrimaryCyanMuted;
+      final ringOptions = _polygonOptionsForCell(
+        cell,
+        fillColor: _accentPrimaryCyan,
+        outlineColor: ringOutline,
+        opacity: ringOpacity,
+      );
+      _recommendationPoly = await _recommendationMgr!.create(ringOptions);
+    } catch (_) {}
+  }
+
+  Future<void> clearRecommendedHex() async {
+    if (_recommendationHaloPoly != null && _recommendationHaloMgr != null) {
+      await _recommendationHaloMgr!.delete(_recommendationHaloPoly!);
+      _recommendationHaloPoly = null;
+    }
+    if (_recommendationPoly == null || _recommendationMgr == null) return;
+    await _recommendationMgr!.delete(_recommendationPoly!);
+    _recommendationPoly = null;
+  }
+
   void dispose() {
+    _recommendationHaloPoly = null;
+    _recommendationPoly = null;
+    _selectionPoly = null;
     _currentPoly = null;
     _capturedPolyByHex.clear();
     _visibleCapturedHex.clear();

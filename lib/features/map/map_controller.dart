@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
 import '../../models/game_tile.dart';
 import '../../src/data/services/capture_service.dart';
@@ -25,6 +26,7 @@ class MapController {
   final LocationService locationService;
   final CaptureService captureService;
   final MapRenderService mapRenderService;
+  final h3lib.H3 _h3 = const h3lib.H3Factory().load();
 
   MapController({
     required this.locationService,
@@ -45,10 +47,7 @@ class MapController {
       }
       return const MapBootstrapResult(synced: true);
     } catch (error) {
-      return MapBootstrapResult(
-        synced: false,
-        error: error,
-      );
+      return MapBootstrapResult(synced: false, error: error);
     }
   }
 
@@ -72,6 +71,7 @@ class MapController {
     double longitude, {
     double radiusMeters = 1500,
     int nearbyRingSize = 7,
+    bool includePreviewEnemyTiles = true,
   }) async {
     final currentHex = await captureService.getCurrentHexForPosition(
       latitude,
@@ -85,14 +85,53 @@ class MapController {
 
     final capturedTiles = await captureService.getCapturedTilesForCurrentUser();
     final nearbyTiles = await captureService.getNearbyTiles();
-    final visibleTiles = <GameTile>[...capturedTiles, ...nearbyTiles];
+    final currentCell = BigInt.parse(currentHex, radix: 16);
+    final neighborHexes = _h3
+        .gridDisk(currentCell, nearbyRingSize)
+        .map((c) => c.toRadixString(16).toLowerCase())
+        .toList();
+
+    final tileByHex = <String, GameTile>{
+      for (final tile in capturedTiles) tile.h3Index.toLowerCase(): tile,
+      for (final tile in nearbyTiles) tile.h3Index.toLowerCase(): tile,
+    };
+
+    for (final hex in neighborHexes) {
+      tileByHex.putIfAbsent(
+        hex,
+        () => GameTile(h3Index: hex, ownership: TileOwnership.neutral),
+      );
+    }
+
+    if (includePreviewEnemyTiles &&
+        !tileByHex.values.any((t) => t.ownership == TileOwnership.enemy)) {
+      final previewHexes = neighborHexes
+          .where((hex) {
+            if (hex == currentHex) return false;
+            final tile = tileByHex[hex];
+            return tile != null && tile.ownership == TileOwnership.neutral;
+          })
+          .take(3);
+
+      final now = DateTime.now();
+      for (final hex in previewHexes) {
+        tileByHex[hex] = GameTile(
+          h3Index: hex,
+          ownership: TileOwnership.enemy,
+          ownerId: '__preview_rival__',
+          capturedAt: now.subtract(const Duration(minutes: 20)),
+          lastRefreshedAt: now.subtract(const Duration(minutes: 1)),
+          protectedUntil: now.add(const Duration(minutes: 30)),
+        );
+      }
+    }
+
+    final visibleTiles = tileByHex.values.toList();
     final currentTile = visibleTiles.cast<GameTile?>().firstWhere(
-          (tile) => tile?.h3Index == currentHex,
-          orElse: () => GameTile(
-            h3Index: currentHex,
-            ownership: TileOwnership.neutral,
-          ),
-        )!;
+      (tile) => tile?.h3Index == currentHex,
+      orElse: () =>
+          GameTile(h3Index: currentHex, ownership: TileOwnership.neutral),
+    )!;
     final isCaptured = currentTile.ownership == TileOwnership.mine;
 
     await mapRenderService.drawCurrentTile(currentTile);
@@ -113,10 +152,7 @@ class MapController {
   }
 
   Future<MapRefreshResult> refreshMapForPosition(geo.Position position) async {
-    return refreshMapForCoordinates(
-      position.latitude,
-      position.longitude,
-    );
+    return refreshMapForCoordinates(position.latitude, position.longitude);
   }
 
   Future<geo.Position?> getCurrentPosition(BuildContext context) async {
@@ -134,15 +170,16 @@ class MapController {
     final ok = await locationService.ensurePermission(context: context);
     if (!ok) return null;
 
-    return locationService.getPositionStream(settings: settings).listen(
-      (position) async {
-        await onPosition(position);
-      },
-      onError: onError,
-    );
+    return locationService.getPositionStream(settings: settings).listen((
+      position,
+    ) async {
+      await onPosition(position);
+    }, onError: onError);
   }
 
-  Future<void> stopTracking(StreamSubscription<geo.Position>? subscription) async {
+  Future<void> stopTracking(
+    StreamSubscription<geo.Position>? subscription,
+  ) async {
     await subscription?.cancel();
   }
 
@@ -184,7 +221,8 @@ class MapController {
       step: nextStep,
       latitude: resolvedBaseLat + (nextStep * dLat),
       longitude:
-          resolvedBaseLng + (nextStep.isEven ? simulationLngOffset : -simulationLngOffset),
+          resolvedBaseLng +
+          (nextStep.isEven ? simulationLngOffset : -simulationLngOffset),
       accuracy: 5.0,
       stepMeters: simulationStepMeters,
     );
@@ -256,6 +294,7 @@ class MapController {
     String? userId,
     double radiusMeters = 1500,
     int nearbyRingSize = 7,
+    bool includePreviewEnemyTiles = true,
   }) async {
     final captureAttempt = await captureTile(
       currentHex: currentHex,
@@ -266,9 +305,7 @@ class MapController {
     );
 
     if (!captureAttempt.didCapture) {
-      return CaptureFlowResult(
-        captureAttempt: captureAttempt,
-      );
+      return CaptureFlowResult(captureAttempt: captureAttempt);
     }
 
     final refresh = await refreshMapForCoordinates(
@@ -276,12 +313,10 @@ class MapController {
       longitude,
       radiusMeters: radiusMeters,
       nearbyRingSize: nearbyRingSize,
+      includePreviewEnemyTiles: includePreviewEnemyTiles,
     );
 
-    return CaptureFlowResult(
-      captureAttempt: captureAttempt,
-      refresh: refresh,
-    );
+    return CaptureFlowResult(captureAttempt: captureAttempt, refresh: refresh);
   }
 }
 
@@ -319,20 +354,14 @@ class CaptureFlowResult {
   final CaptureAttemptResult captureAttempt;
   final MapRefreshResult? refresh;
 
-  const CaptureFlowResult({
-    required this.captureAttempt,
-    this.refresh,
-  });
+  const CaptureFlowResult({required this.captureAttempt, this.refresh});
 }
 
 class MapBootstrapResult {
   final bool synced;
   final Object? error;
 
-  const MapBootstrapResult({
-    required this.synced,
-    this.error,
-  });
+  const MapBootstrapResult({required this.synced, this.error});
 }
 
 class MapCameraUpdate {
