@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -14,7 +15,7 @@ Future<void> main() async {
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvc2NwdWJleGppd2psanFydGd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NTk0NzcsImV4cCI6MjA4ODIzNTQ3N30.nTY3mZehHV2-gSv1huK1LyM1fi1FGC9PnHkoneOoTPg',
   );
 
-  runApp(const TerritoryGameApp());
+  runApp(const ProviderScope(child: TerritoryGameApp()));
 }
 
 class TerritoryGameApp extends StatelessWidget {

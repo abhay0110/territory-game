@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3;
@@ -13,7 +14,6 @@ import '../../../core/constants/game_colors.dart';
 import '../../../core/constants/game_rules.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/game_tile.dart';
-import '../../../models/objective_state.dart';
 import '../../../models/trail_progress.dart';
 import '../../../models/trail_section.dart';
 import '../../config/mapbox.dart';
@@ -25,149 +25,31 @@ import '../../data/services/location_service.dart';
 import '../../data/services/map_event_log_service.dart';
 import '../../data/services/map_render_service.dart';
 import '../../data/services/objective_engine_service.dart';
+import '../../state/game_state.dart';
+import '../../state/game_state_notifier.dart';
+import '../widgets/capture_feedback_overlay.dart';
 import '../widgets/frosted_overlay_card.dart';
+import '../widgets/guided_overlay_card.dart';
+import '../widgets/hud_pill.dart';
 import '../widgets/leaderboard_dialog.dart';
 import '../widgets/map_legend.dart';
 import '../widgets/section_progress_dialog.dart';
 import '../widgets/tile_details_dialog.dart';
 
-enum HudPreference { auto, guided, pro }
+// HudPreference and HudPersonality are now in game_state.dart, re-exported here
+// for backward compat with widget code that references them directly.
+export '../../state/game_state.dart' show HudPreference, HudPersonality;
 
-enum HudPersonality { guided, pro }
-
-class MapScreen extends StatefulWidget {
+class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
 
   @override
-  State<MapScreen> createState() => _MapScreenState();
+  ConsumerState<MapScreen> createState() => _MapScreenState();
 }
 
-class _GuidedOverlayCard extends StatelessWidget {
-  final String message;
-  final Widget? trailing;
 
-  const _GuidedOverlayCard({required this.message, this.trailing});
 
-  @override
-  Widget build(BuildContext context) {
-    return FrostedOverlayCard(
-      emphasized: true,
-      borderRadius: const BorderRadius.all(Radius.circular(14)),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.gps_fixed, size: 14, color: GameUiTokens.accentPrimary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: GameUiText.body(
-                color: GameUiTokens.textHi,
-                size: 13,
-                weight: FontWeight.w800,
-              ),
-            ),
-          ),
-          if (trailing != null) ...[const SizedBox(width: 8), trailing!],
-        ],
-      ),
-    );
-  }
-}
-
-class _CaptureFeedbackOverlay extends StatelessWidget {
-  final String text;
-  final bool success;
-
-  const _CaptureFeedbackOverlay({required this.text, this.success = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-      builder: (context, t, child) {
-        final rise = 12 * (1 - t);
-        return Opacity(
-          opacity: t,
-          child: Transform.translate(
-            offset: Offset(0, rise),
-            child: Transform.scale(scale: 0.94 + (0.06 * t), child: child),
-          ),
-        );
-      },
-      child: Stack(
-        alignment: Alignment.center,
-        clipBehavior: Clip.none,
-        children: [
-          if (success)
-            IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: GameUiTokens.accentSecondary.withOpacity(0.32),
-                  ),
-                ),
-                child: const SizedBox(width: 54, height: 54),
-              ),
-            ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(success ? 0.78 : 0.72),
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: success
-                    ? GameUiTokens.accentSecondary.withOpacity(0.92)
-                    : GameUiTokens.accentPrimary.withOpacity(0.62),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color:
-                      (success
-                              ? GameUiTokens.accentSecondary
-                              : GameUiTokens.accentPrimary)
-                          .withOpacity(success ? 0.32 : 0.2),
-                  blurRadius: success ? 18 : 14,
-                  spreadRadius: success ? 2 : 1,
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (success) ...[
-                  Icon(
-                    Icons.check_circle,
-                    size: 14,
-                    color: GameUiTokens.accentSecondary,
-                  ),
-                  const SizedBox(width: 6),
-                ],
-                Text(
-                  text,
-                  style: GameUiText.command(
-                    color: success
-                        ? GameUiTokens.accentSecondary
-                        : GameUiTokens.accentPrimary,
-                    size: 12,
-                    weight: FontWeight.w800,
-                    letterSpacing: 0.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends ConsumerState<MapScreen> {
   mb.MapboxMap? _map;
 
   final h3.H3 _h3 = const h3.H3Factory().load();
@@ -183,16 +65,16 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<geo.Position>? _posSub;
   bool _tracking = false;
   bool _followMe = true;
-  bool _sessionActive = false;
   String? _lastSessionCaptureAttemptHex;
-  DateTime? _sessionStartedAt;
-  double _sessionDistanceMeters = 0;
-  double? _lastSessionLat;
-  double? _lastSessionLng;
-  int _sessionTilesCaptured = 0;
-  int _sessionTilesRefreshed = 0;
-  int _sessionRivalBlocked = 0;
-  int _sessionTakeovers = 0;
+
+  // ── Session state (single source of truth in Riverpod) ──
+  bool get _sessionActive => ref.read(gameStateProvider).sessionActive;
+  DateTime? get _sessionStartedAt => ref.read(gameStateProvider).sessionStartedAt;
+  double get _sessionDistanceMeters => ref.read(gameStateProvider).sessionDistanceMeters;
+  int get _sessionTilesCaptured => ref.read(gameStateProvider).sessionTilesCaptured;
+  int get _sessionTilesRefreshed => ref.read(gameStateProvider).sessionTilesRefreshed;
+  int get _sessionRivalBlocked => ref.read(gameStateProvider).sessionRivalBlocked;
+  int get _sessionTakeovers => ref.read(gameStateProvider).sessionTakeovers;
   DateTime? _lastAutoCaptureAttemptAt;
   final Map<String, DateTime> _recentAutoCaptureByHex = {};
   String? _pendingAutoCaptureHex;
@@ -219,14 +101,9 @@ class _MapScreenState extends State<MapScreen> {
   static const Duration _autoCaptureDebounce = Duration(seconds: 4);
   static const Duration _autoCaptureTileCooldown = Duration(seconds: 12);
   static const Duration _autoCaptureDwellTime = Duration(seconds: 5);
-  static const String _prefsSessionActive = 'session_active_v1';
+  // Prefs keys managed by provider are in GameStateNotifier.
+  // Only auto-capture local key remains here.
   static const String _prefsSessionLastHex = 'session_last_hex_v1';
-  static const String _prefsSessionStartedAt = 'session_started_at_v1';
-  static const String _prefsUnlockedMilestones = 'unlocked_milestones_v1';
-  static const String _prefsHudPreference = 'hud_preference_v1';
-  static const String _prefsSessionsStarted = 'sessions_started_count_v1';
-  static const String _prefsShowPreviewEnemyTiles =
-      'show_preview_enemy_tiles_v1';
   static const int _totalMilestoneCount = 8;
 
   late final CaptureService _captureService;
@@ -238,10 +115,13 @@ class _MapScreenState extends State<MapScreen> {
   final MapEventLogService _eventLog = MapEventLogService();
   List<TrailProgress> _trailProgress = const [];
   List<TrailSectionProgress> _sectionProgress = const [];
-  ObjectiveState _currentObjective = const ObjectiveState(title: 'Loading...');
-  final Set<String> _unlockedMilestoneIds = <String>{};
-  final List<String> _sessionMilestones = <String>[];
-  bool _capturePulseActive = false;
+  // ── Milestones & session milestones (single source of truth in Riverpod) ──
+  Set<String> get _unlockedMilestoneIds => ref.read(gameStateProvider).unlockedMilestoneIds;
+  List<String> get _sessionMilestones => ref.read(gameStateProvider).sessionMilestones;
+  // Migrated to provider — getters for backward-compat with build helpers.
+  bool get _capturePulseActive => ref.read(gameStateProvider).capturePulseActive;
+  String? get _captureFeedbackText => ref.read(gameStateProvider).captureFeedbackText;
+  bool get _captureFeedbackSuccess => ref.read(gameStateProvider).captureFeedbackSuccess;
   Timer? _capturePulseTimer;
   bool _legendVisible = false;
   bool _actionRailVisible = false;
@@ -249,9 +129,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _bottomHudVisible = false;
   bool _compactHud = false;
   bool _showRecommendationDebug = false;
-  HudPreference _hudPreference = HudPreference.auto;
-  int _sessionsStartedCount = 0;
-  bool _showPreviewEnemyTiles = true;
+  int get _sessionsStartedCount => ref.read(gameStateProvider).sessionsStartedCount;
   Timer? _hudIntroTimer;
   Timer? _actionRailIntroTimer;
   Timer? _mapLegendIntroTimer;
@@ -260,20 +138,16 @@ class _MapScreenState extends State<MapScreen> {
   Timer? _selectedTileTicker;
   Timer? _recommendedTilePulseTimer;
   String? _recommendedTileHex;
+  int _recommendedGlowSyncToken = 0;
   bool _recommendedPulseOn = false;
-  bool _isFirstSessionGuided = false;
-  bool _firstCaptureCelebrated = false;
-  bool _showPostCaptureGuidance = false;
-  bool _guidedCameraCenteredOnce = false;
-  String? _captureFeedbackText;
-  bool _captureFeedbackSuccess = false;
+  // Migrated to provider — getters for backward-compat.
+  bool get _showPostCaptureGuidance => ref.read(gameStateProvider).showPostCaptureGuidance;
+  bool get _guidedCameraCenteredOnce => ref.read(gameStateProvider).guidedCameraCenteredOnce;
   Timer? _captureFeedbackTimer;
   Timer? _postCaptureHintTimer;
 
   // Tap-to-select state
   List<GameTile> _visibleTiles = const [];
-  GameTile? _selectedTile;
-  String? _selectedHex;
 
   Timer? _nearbyRefreshTimer;
 
@@ -287,7 +161,7 @@ class _MapScreenState extends State<MapScreen> {
     mb.MapboxOptions.setAccessToken(kMapboxAccessToken);
 
     _selectedTileTicker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _selectedTile == null) return;
+      if (!mounted || ref.read(gameStateProvider).selectedTile == null) return;
       setState(() {});
     });
 
@@ -338,7 +212,7 @@ class _MapScreenState extends State<MapScreen> {
     _trailSectionProgressService = TrailSectionProgressService();
 
     _initializeMapController();
-    _loadMilestoneState();
+    // Milestones now load via loadFromPrefs() inside _bootstrapInstantFirstCapture.
     unawaited(_bootstrapInstantFirstCapture());
     _updateCurrentObjective();
   }
@@ -364,16 +238,12 @@ class _MapScreenState extends State<MapScreen> {
   void _triggerCapturePulse() {
     _capturePulseTimer?.cancel();
     if (mounted) {
-      setState(() {
-        _capturePulseActive = true;
-      });
+      ref.read(gameStateProvider.notifier).setCapturePulseActive(true);
     }
 
     _capturePulseTimer = Timer(const Duration(milliseconds: 420), () {
       if (!mounted) return;
-      setState(() {
-        _capturePulseActive = false;
-      });
+      ref.read(gameStateProvider.notifier).setCapturePulseActive(false);
     });
   }
 
@@ -404,7 +274,7 @@ class _MapScreenState extends State<MapScreen> {
     final cell = _h3.geoToCell(h3.GeoCoord(lat: lat, lon: lng), h3Resolution);
     final hexLower = cell.toRadixString(16).toLowerCase();
 
-    if (_selectedHex == hexLower) {
+    if (ref.read(gameStateProvider).selectedHex == hexLower) {
       // Second tap on same hex → deselect.
       _dismissSelection();
       return;
@@ -420,10 +290,7 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
-    setState(() {
-      _selectedTile = tile;
-      _selectedHex = hexLower;
-    });
+    ref.read(gameStateProvider.notifier).selectTile(tile, hexLower);
     unawaited(_mapRenderService.drawSelectionHex(hexLower));
     unawaited(_syncRecommendedTileGlow());
 
@@ -458,11 +325,8 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _dismissSelection() {
-    if (_selectedHex == null) return;
-    setState(() {
-      _selectedTile = null;
-      _selectedHex = null;
-    });
+    if (ref.read(gameStateProvider).selectedHex == null) return;
+    ref.read(gameStateProvider.notifier).dismissSelection();
     unawaited(_mapRenderService.clearSelectionHex());
     unawaited(_syncRecommendedTileGlow());
   }
@@ -484,30 +348,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadSessionState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final active = prefs.getBool(_prefsSessionActive) ?? false;
-    final lastHex = prefs.getString(_prefsSessionLastHex);
-    final startedAtRaw = prefs.getString(_prefsSessionStartedAt);
-    final hudPreferenceRaw = prefs.getString(_prefsHudPreference);
-    final sessionsStarted = prefs.getInt(_prefsSessionsStarted) ?? 0;
-    final showPreviewEnemyTiles =
-        prefs.getBool(_prefsShowPreviewEnemyTiles) ?? true;
+    // Load persisted session, HUD, and milestone state into the provider.
+    await ref.read(gameStateProvider.notifier).loadFromPrefs();
 
+    // Load auto-capture local state.
+    final prefs = await SharedPreferences.getInstance();
+    final lastHex = prefs.getString(_prefsSessionLastHex);
     if (!mounted) return;
-    setState(() {
-      _sessionActive = active;
-      _lastSessionCaptureAttemptHex = lastHex;
-      _sessionStartedAt = startedAtRaw == null
-          ? null
-          : DateTime.tryParse(startedAtRaw);
-      _sessionsStartedCount = sessionsStarted;
-      _hudPreference = switch (hudPreferenceRaw) {
-        'guided' => HudPreference.guided,
-        'pro' => HudPreference.pro,
-        _ => HudPreference.auto,
-      };
-      _showPreviewEnemyTiles = showPreviewEnemyTiles;
-    });
+    _lastSessionCaptureAttemptHex = lastHex;
+
     _refreshFirstSessionGuidanceState();
 
     if (_sessionActive) {
@@ -541,28 +390,23 @@ class _MapScreenState extends State<MapScreen> {
   }) async {
     if (_sessionActive) return;
 
-    if (mounted) {
-      setState(() {
-        _sessionActive = true;
-        if (incrementSessionCount) {
-          _sessionsStartedCount += 1;
-        }
-        _lastSessionCaptureAttemptHex = null;
-        _sessionStartedAt = DateTime.now();
-        _sessionDistanceMeters = 0;
-        _sessionTilesCaptured = 0;
-        _sessionTilesRefreshed = 0;
-        _sessionRivalBlocked = 0;
-        _sessionTakeovers = 0;
-        _lastSessionLat = _lastLat;
-        _lastSessionLng = _lastLng;
-        _lastAutoCaptureAttemptAt = null;
-        _recentAutoCaptureByHex.clear();
-        _pendingAutoCaptureHex = null;
-        _enteredPendingTileAt = null;
-        _sessionMilestones.clear();
-      });
+    // Start session in provider (single source of truth for counters).
+    final notifier = ref.read(gameStateProvider.notifier);
+    if (incrementSessionCount) {
+      notifier.startSession(lastLat: _lastLat, lastLng: _lastLng);
+    } else {
+      notifier.startSessionSilently(lastLat: _lastLat, lastLng: _lastLng);
     }
+
+    // Reset auto-capture local state.
+    _lastSessionCaptureAttemptHex = null;
+    _lastAutoCaptureAttemptAt = null;
+    _recentAutoCaptureByHex.clear();
+    _pendingAutoCaptureHex = null;
+    _enteredPendingTileAt = null;
+
+    // Trigger rebuild for HUD.
+    if (mounted) setState(() {});
 
     await _saveSessionState();
     await _unlockMilestones([
@@ -573,41 +417,13 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _refreshFirstSessionGuidanceState() {
-    final hasCapturedAnyTile = _captureService.capturedHexes.isNotEmpty;
-    final canArmGuidance =
-        !_firstCaptureCelebrated &&
-        !_isFirstSessionGuided &&
-        _sessionsStartedCount == 0 &&
-        !hasCapturedAnyTile;
-    final shouldDisarmGuidance = _firstCaptureCelebrated || hasCapturedAnyTile;
-
-    if (!mounted) {
-      if (canArmGuidance) _isFirstSessionGuided = true;
-      if (shouldDisarmGuidance) _isFirstSessionGuided = false;
-      return;
-    }
-
-    if (!canArmGuidance &&
-        !shouldDisarmGuidance &&
-        _showPostCaptureGuidance == false) {
-      return;
-    }
-
-    setState(() {
-      if (canArmGuidance) {
-        _isFirstSessionGuided = true;
-      }
-      if (shouldDisarmGuidance) {
-        _isFirstSessionGuided = false;
-      }
-      if (shouldDisarmGuidance && !_showPostCaptureGuidance) {
-        _showPostCaptureGuidance = false;
-      }
-    });
+    ref.read(gameStateProvider.notifier).refreshFirstSessionGuidance(
+      hasCapturedAnyTile: _captureService.capturedHexes.isNotEmpty,
+    );
   }
 
   bool get _isGuidedFirstCaptureMode =>
-      _isFirstSessionGuided && !_firstCaptureCelebrated;
+      ref.read(isGuidedFirstCaptureModeProvider);
 
   Future<void> _startGuidedSessionFromCta() async {
     if (_sessionActive) return;
@@ -633,25 +449,17 @@ class _MapScreenState extends State<MapScreen> {
   }) {
     _captureFeedbackTimer?.cancel();
     if (!mounted) return;
-    setState(() {
-      _captureFeedbackText = text;
-      _captureFeedbackSuccess = success;
-    });
+    ref.read(gameStateProvider.notifier).showCaptureFeedback(text, success: success);
     _captureFeedbackTimer = Timer(duration, () {
       if (!mounted) return;
-      setState(() {
-        _captureFeedbackText = null;
-        _captureFeedbackSuccess = false;
-      });
+      ref.read(gameStateProvider.notifier).clearCaptureFeedback();
     });
   }
 
   void _onFirstCaptureCompleted() {
-    if (_firstCaptureCelebrated) return;
-    _firstCaptureCelebrated = true;
-    _isFirstSessionGuided = false;
-    _showPostCaptureGuidance = true;
+    if (ref.read(gameStateProvider).firstCaptureCelebrated) return;
     _dismissSelection();
+    ref.read(gameStateProvider.notifier).onFirstCaptureCompleted();
     _showCaptureFeedback(
       '+1 TILE SECURED',
       success: true,
@@ -663,24 +471,16 @@ class _MapScreenState extends State<MapScreen> {
     _postCaptureHintTimer?.cancel();
     _postCaptureHintTimer = Timer(const Duration(milliseconds: 2800), () {
       if (!mounted) return;
-      setState(() {
-        _showPostCaptureGuidance = false;
-      });
+      ref.read(gameStateProvider.notifier).clearPostCaptureGuidance();
     });
   }
 
   Future<void> _saveSessionState() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefsSessionActive, _sessionActive);
-    final hudPreferenceRaw = switch (_hudPreference) {
-      HudPreference.auto => 'auto',
-      HudPreference.guided => 'guided',
-      HudPreference.pro => 'pro',
-    };
-    await prefs.setString(_prefsHudPreference, hudPreferenceRaw);
-    await prefs.setInt(_prefsSessionsStarted, _sessionsStartedCount);
-    await prefs.setBool(_prefsShowPreviewEnemyTiles, _showPreviewEnemyTiles);
+    // Persist provider-managed session/HUD/milestone state.
+    await ref.read(gameStateProvider.notifier).saveToPrefs();
 
+    // Persist auto-capture local state.
+    final prefs = await SharedPreferences.getInstance();
     if (_lastSessionCaptureAttemptHex == null) {
       await prefs.remove(_prefsSessionLastHex);
     } else {
@@ -689,32 +489,14 @@ class _MapScreenState extends State<MapScreen> {
         _lastSessionCaptureAttemptHex!,
       );
     }
-
-    if (_sessionStartedAt == null) {
-      await prefs.remove(_prefsSessionStartedAt);
-    } else {
-      await prefs.setString(
-        _prefsSessionStartedAt,
-        _sessionStartedAt!.toIso8601String(),
-      );
-    }
   }
 
-  Future<void> _loadMilestoneState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getStringList(_prefsUnlockedMilestones) ?? const [];
-    if (!mounted) return;
-    setState(() {
-      _unlockedMilestoneIds
-        ..clear()
-        ..addAll(stored);
-    });
-  }
+  // Milestone loading is now handled by GameStateNotifier.loadFromPrefs()
+  // called inside _loadSessionState(). No separate _loadMilestoneState needed.
 
   Future<void> _saveMilestoneState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final values = _unlockedMilestoneIds.toList()..sort();
-    await prefs.setStringList(_prefsUnlockedMilestones, values);
+    // Milestones are in the provider — save via saveToPrefs which includes them.
+    await ref.read(gameStateProvider.notifier).saveToPrefs();
   }
 
   Future<void> _refreshMapForCoordinates(
@@ -729,21 +511,8 @@ class _MapScreenState extends State<MapScreen> {
       _lastAccuracy = accuracy;
     }
 
-    if (_sessionActive) {
-      if (_lastSessionLat != null && _lastSessionLng != null) {
-        final d = MapRenderService.haversineMeters(
-          _lastSessionLat!,
-          _lastSessionLng!,
-          lat,
-          lng,
-        );
-        if (d > 0 && d < 300) {
-          _sessionDistanceMeters += d;
-        }
-      }
-      _lastSessionLat = lat;
-      _lastSessionLng = lng;
-    }
+    // Accumulate session distance via the provider.
+    ref.read(gameStateProvider.notifier).accumulateSessionDistance(lat, lng);
 
     final previousHex = _currentCell?.toRadixString(16).toLowerCase();
 
@@ -751,7 +520,7 @@ class _MapScreenState extends State<MapScreen> {
       lat,
       lng,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: _showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
     );
     _applyRefreshResult(result, currentLat: lat, currentLng: lng);
 
@@ -852,7 +621,7 @@ class _MapScreenState extends State<MapScreen> {
       accuracy: accuracy,
       userId: _mapController.currentUserId,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: _showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
     );
 
     final result = flowResult.captureAttempt;
@@ -920,26 +689,12 @@ class _MapScreenState extends State<MapScreen> {
     double? currentLng,
   }) {
     final cell = BigInt.parse(result.currentHex, radix: 16);
-    var shouldClearSelection = false;
     setState(() {
       _currentCell = cell;
       _currentTile = result.currentHex;
       _captured = result.isCaptured;
       _currentGameTile = result.currentTile;
       _visibleTiles = result.visibleTiles;
-      // Refresh selected tile info when map updates.
-      if (_selectedHex != null) {
-        final refreshed = result.visibleTiles
-            .where((t) => t.h3Index.toLowerCase() == _selectedHex)
-            .firstOrNull;
-        if (refreshed != null) {
-          _selectedTile = refreshed;
-        } else {
-          _selectedTile = null;
-          _selectedHex = null;
-          shouldClearSelection = true;
-        }
-      }
       _trailProgress = _trailProgressService.calculateProgress(
         _captureService.capturedHexes,
         currentLat: currentLat,
@@ -953,6 +708,21 @@ class _MapScreenState extends State<MapScreen> {
         currentLng: currentLng,
       );
     });
+
+    // Refresh selected tile info from provider after map update.
+    final selectedHex = ref.read(gameStateProvider).selectedHex;
+    var shouldClearSelection = false;
+    if (selectedHex != null) {
+      final refreshed = result.visibleTiles
+          .where((t) => t.h3Index.toLowerCase() == selectedHex)
+          .firstOrNull;
+      if (refreshed != null) {
+        ref.read(gameStateProvider.notifier).selectTile(refreshed, selectedHex);
+      } else {
+        ref.read(gameStateProvider.notifier).dismissSelection();
+        shouldClearSelection = true;
+      }
+    }
 
     if (shouldClearSelection) {
       unawaited(_mapRenderService.clearSelectionHex());
@@ -1192,9 +962,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   GameTile? _bestRecommendedCapturableTile({double? lat, double? lng}) {
-    if (!_sessionActive && !_isGuidedFirstCaptureMode) return null;
     final guidedMode = _resolveHudPersonality() == HudPersonality.guided;
-    if (_selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode) {
+    // Allow recommendation in Guided mode even pre-session so glow and copy stay in sync.
+    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) return null;
+    if (ref.read(gameStateProvider).selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode) {
       return null;
     }
 
@@ -1238,16 +1009,18 @@ class _MapScreenState extends State<MapScreen> {
     return chosen.tile;
   }
 
-  String? _guidedPriorityTargetHex() {
-    if (!_sessionActive && !_isGuidedFirstCaptureMode) return null;
-    final fallback = _bestRecommendedCapturableTile(
-      lat: _lastLat,
-      lng: _lastLng,
-    );
-    return _recommendedTileHex ?? fallback?.h3Index.toLowerCase();
+  String? _guidedPriorityTargetHex({double? lat, double? lng}) {
+    final guidedMode = _resolveHudPersonality() == HudPersonality.guided;
+    // Allow target resolution in Guided mode pre-session so copy and glow align.
+    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) return null;
+    return _bestRecommendedCapturableTile(
+      lat: lat,
+      lng: lng,
+    )?.h3Index.toLowerCase();
   }
 
   Future<void> _clearRecommendedTileGlow() async {
+    _recommendedGlowSyncToken += 1;
     _recommendedTilePulseTimer?.cancel();
     _recommendedTilePulseTimer = null;
     _recommendedTileHex = null;
@@ -1280,42 +1053,49 @@ class _MapScreenState extends State<MapScreen> {
     double? currentLat,
     double? currentLng,
   }) async {
+    final syncToken = ++_recommendedGlowSyncToken;
     final hudPersonality = _resolveHudPersonality();
     final guidedMode = hudPersonality == HudPersonality.guided;
     final proMode = hudPersonality == HudPersonality.pro;
-    final showInPro = _currentObjective.actionLabel == 'Capture';
+    final showInPro = ref.read(gameStateProvider).currentObjective.actionLabel == 'Capture';
 
-    if ((!_sessionActive && !_isGuidedFirstCaptureMode) ||
+    // Allow glow pre-session in Guided mode so it matches the copy that mentions it.
+    if ((!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) ||
         (proMode && !showInPro && !_isGuidedFirstCaptureMode) ||
-        (_selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode)) {
+        (ref.read(gameStateProvider).selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode)) {
+      if (syncToken != _recommendedGlowSyncToken) return;
       await _clearRecommendedTileGlow();
       return;
     }
 
-    final candidate = _bestRecommendedCapturableTile(
+    final targetHex = _guidedPriorityTargetHex(
       lat: currentLat,
       lng: currentLng,
     );
-    if (candidate == null) {
+    if (targetHex == null) {
+      if (syncToken != _recommendedGlowSyncToken) return;
       await _clearRecommendedTileGlow();
       return;
     }
 
-    final hex = candidate.h3Index.toLowerCase();
-    _recommendedTileHex = hex;
+    _recommendedTileHex = targetHex;
+    if (_map == null) return;
+
     _ensureRecommendedPulseTimer();
 
     _recommendedPulseOn = !_recommendedPulseOn;
+    if (syncToken != _recommendedGlowSyncToken) return;
     await _mapRenderService.drawRecommendedHex(
-      hex,
+      targetHex,
       pulseOn: _recommendedPulseOn,
       strong: guidedMode || _isGuidedFirstCaptureMode,
     );
+    if (syncToken != _recommendedGlowSyncToken) return;
 
     if (_isGuidedFirstCaptureMode && !_guidedCameraCenteredOnce) {
       try {
-        final cell = BigInt.parse(hex, radix: 16);
-        final center = _mapRenderService.cellCentroid(cell, hex);
+        final cell = BigInt.parse(targetHex, radix: 16);
+        final center = _mapRenderService.cellCentroid(cell, targetHex);
         _map?.flyTo(
           mb.CameraOptions(
             center: mb.Point(coordinates: mb.Position(center.lng, center.lat)),
@@ -1323,7 +1103,7 @@ class _MapScreenState extends State<MapScreen> {
           ),
           mb.MapAnimationOptions(duration: 900),
         );
-        _guidedCameraCenteredOnce = true;
+        ref.read(gameStateProvider.notifier).setGuidedCameraCenteredOnce(true);
       } catch (_) {
         // Keep guidance running even if centroid conversion fails.
       }
@@ -1452,23 +1232,17 @@ class _MapScreenState extends State<MapScreen> {
   ) async {
     if (checks.isEmpty) return;
 
-    final newlyUnlocked = <({String id, String title})>[];
-    for (final check in checks) {
-      if (!_unlockedMilestoneIds.contains(check.id)) {
-        _unlockedMilestoneIds.add(check.id);
-        newlyUnlocked.add((id: check.id, title: check.title));
-      }
-    }
+    // Filter to truly new milestones using the provider as source of truth.
+    final gs = ref.read(gameStateProvider);
+    final newlyUnlocked = checks
+        .where((c) => !gs.unlockedMilestoneIds.contains(c.id))
+        .toList(growable: false);
 
     if (newlyUnlocked.isEmpty) return;
 
+    // Update provider (adds to both unlockedMilestoneIds and sessionMilestones).
+    ref.read(gameStateProvider.notifier).addUnlockedMilestones(newlyUnlocked);
     await _saveMilestoneState();
-
-    if (mounted) {
-      setState(() {
-        _sessionMilestones.addAll(newlyUnlocked.map((m) => m.title));
-      });
-    }
 
     for (final unlocked in newlyUnlocked) {
       _eventLog.log(
@@ -1914,7 +1688,7 @@ class _MapScreenState extends State<MapScreen> {
       title: direction == null
           ? 'Move to the glowing tile'
           : '$directionLead to target',
-      detail: _currentObjective.detail ?? _nextObjectiveDetailText(),
+      detail: ref.read(gameStateProvider).currentObjective.detail ?? _nextObjectiveDetailText(),
       cta: 'Move to Target',
     );
   }
@@ -1948,7 +1722,7 @@ class _MapScreenState extends State<MapScreen> {
               : '🎯 Session live - move $direction to the glow')
         : hasMomentumTarget
         ? targetCopy!.title
-        : _currentObjective.title;
+        : ref.read(gameStateProvider).currentObjective.title;
     final detail = preSession
         ? 'Auto-capture activates while you move through target tiles'
         : isFirstCapture
@@ -1958,7 +1732,7 @@ class _MapScreenState extends State<MapScreen> {
         : (currentOwnedByMe
               ? (targetCopy?.detail ??
                     'Move to the highlighted target to keep momentum')
-              : _currentObjective.detail);
+              : ref.read(gameStateProvider).currentObjective.detail);
     final buttonLabel = preSession
         ? 'Start Session'
         : isFirstCapture
@@ -2061,14 +1835,16 @@ class _MapScreenState extends State<MapScreen> {
         _currentGameTile.ownership == TileOwnership.mine &&
         !isFirstCapture;
     final message = preSession
-        ? '▶ Start session, then move to the glowing tile'
+        ? (guidedTargetHex != null
+            ? '▶ Start session, then move to the glowing tile'
+            : '▶ Start session to begin capturing tiles')
         : isFirstCapture
         ? (direction == null
               ? '🎯 Session live - move to the glowing tile'
               : '🎯 Session live - move $direction to the glow')
         : hasMomentumTarget
         ? targetCopy!.title
-        : _currentObjective.title;
+        : ref.read(gameStateProvider).currentObjective.title;
     final buttonLabel = preSession
         ? 'Start'
         : isFirstCapture
@@ -2237,8 +2013,8 @@ class _MapScreenState extends State<MapScreen> {
             spacing: 8,
             runSpacing: 6,
             children: [
-              _buildHudPill(label: 'Owner', value: owner),
-              _buildHudPill(label: 'Status', value: status),
+              HudPill(label: 'Owner', value: owner),
+              HudPill(label: 'Status', value: status),
             ],
           ),
           if (status == 'Protected') ...[
@@ -2292,37 +2068,21 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _updateSessionSummaryCounters(CaptureAttemptResult result) {
-    if (!_sessionActive) return;
-
-    switch (result.status) {
-      case CaptureAttemptStatus.captured:
-        _sessionTilesCaptured += 1;
-      case CaptureAttemptStatus.takeoverCaptured:
-        _sessionTilesCaptured += 1;
-        _sessionTakeovers += 1;
-      case CaptureAttemptStatus.protectionRefreshed:
-        _sessionTilesRefreshed += 1;
-      case CaptureAttemptStatus.protectedByRival:
-        _sessionRivalBlocked += 1;
-      case CaptureAttemptStatus.lowAccuracy:
-      case CaptureAttemptStatus.tooFarFromCenter:
-        break;
-    }
+    ref.read(gameStateProvider.notifier).updateSessionCounters(result);
   }
 
   void _updateCurrentObjective() {
-    setState(() {
-      _currentObjective = _objectiveEngine.evaluateObjective(
-        sessionActive: _sessionActive,
-        currentTile: _currentGameTile,
-        capturedHexes: _captureService.capturedHexes,
-        capturedHexesCount: _captureService.capturedHexes.length,
-        protectedUntil: _currentGameTile.protectedUntil,
-        trailProgress: _trailProgress,
-        sectionProgress: _sectionProgress,
-        streakDirectionHint: _streakDirectionHint(),
-      );
-    });
+    final objective = _objectiveEngine.evaluateObjective(
+      sessionActive: _sessionActive,
+      currentTile: _currentGameTile,
+      capturedHexes: _captureService.capturedHexes,
+      capturedHexesCount: _captureService.capturedHexes.length,
+      protectedUntil: _currentGameTile.protectedUntil,
+      trailProgress: _trailProgress,
+      sectionProgress: _sectionProgress,
+      streakDirectionHint: _streakDirectionHint(),
+    );
+    ref.read(gameStateProvider.notifier).setCurrentObjective(objective);
     unawaited(_syncRecommendedTileGlow());
   }
 
@@ -2559,7 +2319,7 @@ class _MapScreenState extends State<MapScreen> {
       accuracy: _lastAccuracy,
       userId: _mapController.currentUserId,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: _showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
     );
     final result = flowResult.captureAttempt;
 
@@ -2633,22 +2393,29 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _toggleSession() async {
     if (_sessionActive) {
-      setState(() {
-        _sessionActive = false;
-        _pendingAutoCaptureHex = null;
-        _enteredPendingTileAt = null;
-      });
+      // Snapshot counters for log/summary before stopping.
+      final gs = ref.read(gameStateProvider);
+      final captured = gs.sessionTilesCaptured;
+      final refreshed = gs.sessionTilesRefreshed;
+      final blocked = gs.sessionRivalBlocked;
+      final takeovers = gs.sessionTakeovers;
+      final distance = gs.sessionDistanceMeters;
+
+      ref.read(gameStateProvider.notifier).stopSession();
+      _pendingAutoCaptureHex = null;
+      _enteredPendingTileAt = null;
+      setState(() {});
 
       await _saveSessionState();
       _eventLog.log(
         MapEventType.sessionStopped,
         'Session stopped',
         metadata: {
-          'captured': _sessionTilesCaptured,
-          'refreshed': _sessionTilesRefreshed,
-          'blocked': _sessionRivalBlocked,
-          'takeovers': _sessionTakeovers,
-          'distanceMeters': _sessionDistanceMeters,
+          'captured': captured,
+          'refreshed': refreshed,
+          'blocked': blocked,
+          'takeovers': takeovers,
+          'distanceMeters': distance,
         },
       );
 
@@ -2658,24 +2425,20 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
-    setState(() {
-      _sessionActive = true;
-      _sessionsStartedCount += 1;
-      _lastSessionCaptureAttemptHex = null;
-      _sessionStartedAt = DateTime.now();
-      _sessionDistanceMeters = 0;
-      _sessionTilesCaptured = 0;
-      _sessionTilesRefreshed = 0;
-      _sessionRivalBlocked = 0;
-      _sessionTakeovers = 0;
-      _lastSessionLat = _lastLat;
-      _lastSessionLng = _lastLng;
-      _lastAutoCaptureAttemptAt = null;
-      _recentAutoCaptureByHex.clear();
-      _pendingAutoCaptureHex = null;
-      _enteredPendingTileAt = null;
-      _sessionMilestones.clear();
-    });
+    // Start session via provider (single source of truth).
+    ref.read(gameStateProvider.notifier).startSession(
+      lastLat: _lastLat,
+      lastLng: _lastLng,
+    );
+
+    // Reset auto-capture local state.
+    _lastSessionCaptureAttemptHex = null;
+    _lastAutoCaptureAttemptAt = null;
+    _recentAutoCaptureByHex.clear();
+    _pendingAutoCaptureHex = null;
+    _enteredPendingTileAt = null;
+
+    setState(() {});
 
     await _saveSessionState();
     await _unlockMilestones([
@@ -2715,7 +2478,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   HudPersonality _resolveHudPersonality() {
-    switch (_hudPreference) {
+    switch (ref.read(gameStateProvider).hudPreference) {
       case HudPreference.guided:
         return HudPersonality.guided;
       case HudPreference.pro:
@@ -2731,19 +2494,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _setHudPreference(HudPreference preference) async {
-    if (_hudPreference == preference) return;
-    setState(() {
-      _hudPreference = preference;
-    });
+    if (ref.read(gameStateProvider).hudPreference == preference) return;
+    ref.read(gameStateProvider.notifier).setHudPreference(preference);
     await _saveSessionState();
     await _syncRecommendedTileGlow();
   }
 
   Future<void> _setShowPreviewEnemyTiles(bool value) async {
-    if (_showPreviewEnemyTiles == value) return;
-    setState(() {
-      _showPreviewEnemyTiles = value;
-    });
+    if (ref.read(gameStateProvider).showPreviewEnemyTiles == value) return;
+    ref.read(gameStateProvider.notifier).setShowPreviewEnemyTiles(value);
     await _saveSessionState();
 
     final lat = _lastLat;
@@ -2754,6 +2513,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildGuidedModeMenuButton() {
+    final hudPref = ref.read(gameStateProvider).hudPreference;
     return PopupMenuButton<HudPreference>(
       tooltip: 'HUD mode',
       onSelected: (value) {
@@ -2762,17 +2522,17 @@ class _MapScreenState extends State<MapScreen> {
       itemBuilder: (context) => [
         CheckedPopupMenuItem(
           value: HudPreference.auto,
-          checked: _hudPreference == HudPreference.auto,
+          checked: hudPref == HudPreference.auto,
           child: const Text('Auto HUD'),
         ),
         CheckedPopupMenuItem(
           value: HudPreference.guided,
-          checked: _hudPreference == HudPreference.guided,
+          checked: hudPref == HudPreference.guided,
           child: const Text('Guided HUD'),
         ),
         CheckedPopupMenuItem(
           value: HudPreference.pro,
-          checked: _hudPreference == HudPreference.pro,
+          checked: hudPref == HudPreference.pro,
           child: const Text('Pro HUD'),
         ),
       ],
@@ -2797,17 +2557,23 @@ class _MapScreenState extends State<MapScreen> {
     final direction = _streakDirectionHint();
 
     if (!_sessionActive) {
-      return _GuidedOverlayCard(
+      // Only reference glow when a recommendation target actually exists.
+      final hasGlow = guidedTargetHex != null;
+      return GuidedOverlayCard(
         message: direction == null
-            ? '▶ Start session, then move to the glowing tile'
-            : '▶ Start session, then move $direction to the glow',
+            ? (hasGlow
+                ? '▶ Start session, then move to the glowing tile'
+                : '▶ Start session to begin capturing tiles')
+            : (hasGlow
+                ? '▶ Start session, then move $direction to the glow'
+                : '▶ Start session, then move $direction'),
         trailing: _buildGuidedModeMenuButton(),
       );
     }
 
     // First-capture: pure action focus — keep it dead simple.
     if (_isGuidedFirstCaptureMode) {
-      return _GuidedOverlayCard(
+      return GuidedOverlayCard(
         message: direction == null
             ? '⚡ Session live - move to the glowing tile'
             : '⚡ Session live - move $direction to the glow',
@@ -2820,7 +2586,7 @@ class _MapScreenState extends State<MapScreen> {
       final hasSectionPressure = _sectionProgress.any(
         (s) => s.controlState == SectionControlState.contested,
       );
-      return _GuidedOverlayCard(
+      return GuidedOverlayCard(
         message: direction == null
             ? (hasSectionPressure
                   ? '🔥 Great capture. One more tile can swing this section'
@@ -2832,7 +2598,7 @@ class _MapScreenState extends State<MapScreen> {
 
     // Normal guided mode: objective-aware compact HUD.
     final mineCount = _captureService.capturedHexes.length;
-    final objective = _currentObjective;
+    final objective = ref.read(gameStateProvider).currentObjective;
     final onRecommendedTile =
         guidedTargetHex != null &&
         _currentTile.isNotEmpty &&
@@ -2897,14 +2663,14 @@ class _MapScreenState extends State<MapScreen> {
             spacing: 6,
             runSpacing: 4,
             children: [
-              _buildHudPill(
+              HudPill(
                 label: 'Tiles',
                 value: '$mineCount',
                 color: mineCount > 0
                     ? GameUiTokens.accentSecondary
                     : GameUiTokens.textMid,
               ),
-              _buildHudPill(
+              HudPill(
                 label: 'Session',
                 value: _sessionActive
                     ? 'Live ${_sessionElapsedText()}'
@@ -2932,40 +2698,6 @@ class _MapScreenState extends State<MapScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  Widget _buildHudPill({
-    required String label,
-    required String value,
-    Color color = Colors.white,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: GameUiTokens.bg2.withOpacity(0.48),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: GameUiTokens.panelBorder.withOpacity(0.75)),
-      ),
-      child: RichText(
-        text: TextSpan(
-          style: GameUiText.meta(
-            color: GameUiTokens.textMid,
-            size: 11,
-            weight: FontWeight.w600,
-          ),
-          children: [
-            TextSpan(text: '$label '),
-            TextSpan(
-              text: value,
-              style: GameUiText.body(
-                color: color,
-                size: 12,
-                weight: FontWeight.w800,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildPremiumTopHud({required bool compactHud, required bool muted}) {
     final mineCount = _captureService.capturedHexes.length;
@@ -3064,7 +2796,7 @@ class _MapScreenState extends State<MapScreen> {
                           break;
                         case 'preview_enemy_tiles':
                           unawaited(
-                            _setShowPreviewEnemyTiles(!_showPreviewEnemyTiles),
+                            _setShowPreviewEnemyTiles(!ref.read(gameStateProvider).showPreviewEnemyTiles),
                           );
                           break;
                         case 'debug_reco':
@@ -3087,23 +2819,23 @@ class _MapScreenState extends State<MapScreen> {
                       const PopupMenuDivider(),
                       CheckedPopupMenuItem(
                         value: 'auto',
-                        checked: _hudPreference == HudPreference.auto,
+                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.auto,
                         child: const Text('Auto HUD'),
                       ),
                       CheckedPopupMenuItem(
                         value: 'guided',
-                        checked: _hudPreference == HudPreference.guided,
+                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.guided,
                         child: const Text('Guided HUD'),
                       ),
                       CheckedPopupMenuItem(
                         value: 'pro',
-                        checked: _hudPreference == HudPreference.pro,
+                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.pro,
                         child: const Text('Pro HUD'),
                       ),
                       const PopupMenuDivider(),
                       CheckedPopupMenuItem(
                         value: 'preview_enemy_tiles',
-                        checked: _showPreviewEnemyTiles,
+                        checked: ref.read(gameStateProvider).showPreviewEnemyTiles,
                         child: const Text('Preview rival tiles'),
                       ),
                       if (kDebugMode) ...[
@@ -3133,30 +2865,30 @@ class _MapScreenState extends State<MapScreen> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _buildHudPill(
+                  HudPill(
                     label: 'Tracking',
                     value: _tracking ? 'On' : 'Off',
                     color: _tracking ? GameColors.statusTracking : Colors.grey,
                   ),
-                  _buildHudPill(
+                  HudPill(
                     label: 'Session',
                     value: _sessionActive ? 'Active' : 'Paused',
                     color: _sessionActive
                         ? GameColors.statusSessionOn
                         : Colors.grey,
                   ),
-                  _buildHudPill(label: 'Captured', value: '$mineCount'),
+                  HudPill(label: 'Captured', value: '$mineCount'),
                   if (!compactHud)
-                    _buildHudPill(label: 'Nearby', value: '$visibleCount'),
-                  _buildHudPill(
+                    HudPill(label: 'Nearby', value: '$visibleCount'),
+                  HudPill(
                     label: 'Achievements',
                     value:
                         '${_unlockedMilestoneIds.length}/$_totalMilestoneCount',
                     color: Colors.amberAccent,
                   ),
                   if (!compactHud)
-                    _buildHudPill(label: 'Time', value: _sessionElapsedText()),
-                  _buildHudPill(
+                    HudPill(label: 'Time', value: _sessionElapsedText()),
+                  HudPill(
                     label: compactHud ? 'KM' : 'DIST',
                     value: '${distanceKm}km',
                     color: accent,
@@ -3248,6 +2980,9 @@ class _MapScreenState extends State<MapScreen> {
       );
     }
 
+    // Subscribe to provider so notifier-only mutations trigger rebuilds.
+    final gs = ref.watch(gameStateProvider);
+
     final compactHud = _compactHud;
     final topInset = MediaQuery.paddingOf(context).top;
     final screenSize = MediaQuery.sizeOf(context);
@@ -3296,6 +3031,11 @@ class _MapScreenState extends State<MapScreen> {
                   accuracy: _lastAccuracy,
                 );
               }
+
+              await _syncRecommendedTileGlow(
+                currentLat: _lastLat,
+                currentLng: _lastLng,
+              );
             },
           ),
           Positioned.fill(
@@ -3427,7 +3167,7 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ),
             ),
-          if (_selectedTile != null)
+          if (gs.selectedTile != null)
             Positioned(
               left: 16,
               right: 16,
@@ -3442,7 +3182,7 @@ class _MapScreenState extends State<MapScreen> {
                 child: firstCaptureGuidedMode
                     ? const SizedBox.shrink()
                     : _buildSelectedTileInfoCard(
-                        tile: _selectedTile!,
+                        tile: gs.selectedTile!,
                         guidedMode: guidedMode,
                         compactHud: compactHud,
                       ),
@@ -3728,7 +3468,7 @@ class _MapScreenState extends State<MapScreen> {
               top: topInset + 150,
               child: IgnorePointer(
                 child: Center(
-                  child: _CaptureFeedbackOverlay(
+                  child: CaptureFeedbackOverlay(
                     text: _captureFeedbackText!,
                     success: _captureFeedbackSuccess,
                   ),

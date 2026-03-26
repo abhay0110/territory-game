@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
@@ -331,7 +332,12 @@ class MapRenderService {
         opacity: 0.20,
       );
       _selectionPoly = await _selectionMgr!.create(options);
-    } catch (_) {}
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint('MapRenderService.drawRecommendedHex failed for $h3Index: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
   }
 
   /// Removes the selection ring added by [drawSelectionHex].
