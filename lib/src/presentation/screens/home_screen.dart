@@ -2,9 +2,12 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/theme/game_ui_tokens.dart';
+import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
+import '../widgets/trail_leaderboard_sheet.dart';
 import 'map_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -40,10 +43,24 @@ class _HomeScreenState extends State<HomeScreen>
     ).push(MaterialPageRoute(builder: (context) => const MapScreen()));
   }
 
+  void _enterBattleWithLeaderboard() {
+    final service = TrailLeaderboardService(
+      supabaseClient: Supabase.instance.client,
+    );
+    showTrailLeaderboardSheet(context, service: service);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: DecoratedBox(
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        body: DecoratedBox(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
@@ -66,6 +83,8 @@ class _HomeScreenState extends State<HomeScreen>
                           logoAsset: _logoAsset,
                         ),
                         const SizedBox(height: 12),
+                        _LeaderboardTeaser(onTap: _enterBattleWithLeaderboard),
+                        const SizedBox(height: 12),
                         const _FirstObjectiveCard(),
                       ],
                     ),
@@ -81,6 +100,7 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ),
+    ),
     );
   }
 }
@@ -108,16 +128,16 @@ class _LiveBattleCard extends StatelessWidget {
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: GameUiTokens.danger.withOpacity(0.16),
+                  color: GameUiTokens.accentPrimary.withOpacity(0.16),
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(
-                    color: GameUiTokens.danger.withOpacity(0.75),
+                    color: GameUiTokens.accentPrimary.withOpacity(0.75),
                   ),
                 ),
                 child: Text(
-                  '🔴 LIVE BATTLE',
+                  '⚔️ BATTLEFIELD',
                   style: GameUiText.command(
-                    color: GameUiTokens.danger,
+                    color: GameUiTokens.accentPrimary,
                     size: 11,
                     weight: FontWeight.w800,
                     letterSpacing: 0.55,
@@ -152,7 +172,7 @@ class _LiveBattleCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Text(
-            'Burke-Gilman West',
+            'Burke-Gilman Trail',
             style: GameUiText.command(
               color: GameUiTokens.textHi,
               size: 23,
@@ -164,23 +184,23 @@ class _LiveBattleCard extends StatelessWidget {
           Row(
             children: const [
               _HeroStatChip(
-                icon: '🟢',
-                label: 'You',
-                value: '0',
+                icon: '⬡',
+                label: 'Hexes',
+                value: 'Claimable',
                 color: GameUiTokens.accentSecondary,
               ),
               SizedBox(width: 8),
               _HeroStatChip(
-                icon: '🔴',
-                label: 'Rival',
-                value: '12',
-                color: GameUiTokens.danger,
+                icon: '⚔️',
+                label: 'Status',
+                value: 'Contested',
+                color: GameUiTokens.warning,
               ),
             ],
           ),
           const SizedBox(height: 8),
           Text(
-            'First move: take the glowing target tile',
+            'Claim tiles by walking or riding the trail',
             style: GameUiText.meta(
               color: GameUiTokens.accentPrimary,
               size: 12,
@@ -202,16 +222,16 @@ class _LiveBattleCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '⚠️ Under pressure • ⚡ 1 move to enter fight',
+                  '⚡ Real territory · Real competition',
                   style: GameUiText.body(
-                    color: GameUiTokens.warning,
+                    color: GameUiTokens.accentPrimary,
                     size: 13,
                     weight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '🔥 3 players active',
+                  'Claim hexes — rankings update with every walk',
                   style: GameUiText.meta(
                     color: GameUiTokens.textMid,
                     size: 12,
@@ -386,6 +406,60 @@ class _FirstObjectiveCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Compact leaderboard teaser — acknowledges competition without showing
+/// fake numbers.  Tapping navigates to the map where the leaderboard pill
+/// is visible in the pre-session Guided HUD.
+class _LeaderboardTeaser extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _LeaderboardTeaser({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: FrostedOverlayCard(
+        borderRadius: const BorderRadius.all(Radius.circular(14)),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: Row(
+          children: [
+            const Text('🏆', style: TextStyle(fontSize: 18)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Trail Rankings',
+                    style: GameUiText.body(
+                      color: GameUiTokens.accentPrimary,
+                      size: 13,
+                      weight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'See who controls the most territory',
+                    style: GameUiText.meta(
+                      color: GameUiTokens.textMid,
+                      size: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              size: 18,
+              color: GameUiTokens.textMid,
+            ),
+          ],
+        ),
       ),
     );
   }

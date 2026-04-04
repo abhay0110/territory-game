@@ -51,7 +51,10 @@ import '../widgets/welcome_dialog.dart';
 export '../../state/game_state.dart' show HudPreference, HudPersonality;
 
 class MapScreen extends ConsumerStatefulWidget {
-  const MapScreen({super.key});
+  /// When true the leaderboard sheet opens automatically after bootstrap.
+  final bool openLeaderboard;
+
+  const MapScreen({super.key, this.openLeaderboard = false});
 
   @override
   ConsumerState<MapScreen> createState() => _MapScreenState();
@@ -709,6 +712,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   @override
   void initState() {
     super.initState();
+    // Full-screen immersive: hide status & nav bars on the map.
+    // User can swipe from edge to temporarily reveal them.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     mb.MapboxOptions.setAccessToken(kMapboxAccessToken);
 
     _selectedTileTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -775,6 +781,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   @override
   void dispose() {
+    // Restore normal edge-to-edge mode when leaving the map.
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _posSub?.cancel();
     _nearbyRefreshTimer?.cancel();
     _capturePulseTimer?.cancel();
@@ -824,6 +832,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   void _onMapTap(mb.MapContentGestureContext context) {
     _onMapInteraction();
 
+    // Pre-session: no tile-detail interaction — keep focus on Start Session.
+    if (!_sessionActive) {
+      _dismissSelection();
+      return;
+    }
+
     final coords = context.point.coordinates;
     final lat = coords.lat.toDouble();
     final lng = coords.lng.toDouble();
@@ -837,15 +851,23 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       return;
     }
 
-    final tile = _visibleTiles
-        .where((t) => t.h3Index.toLowerCase() == hexLower)
-        .firstOrNull;
-
-    // Only allow selecting visible hexes to avoid off-context selections.
-    if (tile == null) {
+    // Active session: only allow on-trail gameplay hexes.
+    // Accept if the hex is in the playable set (ValidTrailHexes) OR the
+    // visual trail corridor (displayHexes).  Both exclude water/blacklisted
+    // hexes.  Off-trail hexes are in neither set → blocked.
+    if (!ValidTrailHexes.isValid(hexLower) &&
+        !LaunchCorridor.displayHexes.contains(hexLower)) {
       _dismissSelection();
       return;
     }
+
+    // Look up tile data from the nearby ring; for trail hexes beyond the
+    // ring-7 disk (visible via corridor lane but outside the refresh
+    // radius), synthesize a neutral placeholder so the tap still registers.
+    final tile = _visibleTiles
+            .where((t) => t.h3Index.toLowerCase() == hexLower)
+            .firstOrNull ??
+        GameTile(h3Index: hexLower, ownership: TileOwnership.neutral);
 
     ref.read(gameStateProvider.notifier).selectTile(tile, hexLower);
     unawaited(_mapRenderService.drawSelectionHex(hexLower));
@@ -1009,13 +1031,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     _refreshFirstSessionGuidanceState();
 
+    // For MVP, always start in pre-session state when the map opens.
+    // The user must explicitly tap "Start Session" to begin gameplay.
+    // This prevents stale persisted sessions from auto-restoring and
+    // making "Enter the Battle" feel like it starts a session.
     if (_sessionActive) {
-      _eventLog.log(
-        MapEventType.sessionStarted,
-        'Session restored after app resume/reopen',
-        metadata: {'lastHex': _lastSessionCaptureAttemptHex},
-      );
-      _startLeaderboardRefreshTimer();
+      ref.read(gameStateProvider.notifier).stopSession();
+      unawaited(_saveSessionState());
     }
   }
 
@@ -1062,6 +1084,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     // Prefetch lightweight leaderboard teaser for Guided HUD pill.
     unawaited(_prefetchLeaderboardTeaser());
+
+    // If launched with openLeaderboard flag (e.g. from home screen Trail
+    // Rankings card), show the leaderboard sheet once the map is ready.
+    if (widget.openLeaderboard) {
+      // Small delay so the map renders before the sheet slides up.
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (mounted) _showLeaderboard();
+      });
+    }
   }
 
   Future<void> _startSessionSilently({
@@ -3756,8 +3787,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     );
     final guidedSwitchDuration = Duration(milliseconds: guidedMode ? 240 : 280);
 
-    return Scaffold(
-      body: Stack(
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        body: Stack(
         children: [
           mb.MapWidget(
             key: const ValueKey('mapWidget'),
@@ -3964,7 +4002,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               ),
             ),
           // Launch corridor banner (one-trail-first state)
-          if (_showLaunchBanner && guidedMode)
+          // Suppressed while a tile is selected so the tile card has priority.
+          if (_showLaunchBanner && guidedMode && gs.selectedTile == null)
             Positioned(
               left: 16,
               right: 16,
@@ -4260,6 +4299,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             ),
         ],
       ),
+    ),
     );
   }
 }
