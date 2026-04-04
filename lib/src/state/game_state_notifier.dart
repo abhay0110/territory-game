@@ -49,15 +49,9 @@ HudPersonality _resolveHudPersonality(GameState state) {
     case HudPreference.pro:
       return HudPersonality.pro;
     case HudPreference.auto:
-      // Conservative auto: stays guided until player has real experience.
-      final captured = state.visibleTiles
-          .where((t) => t.ownership == TileOwnership.mine)
-          .length;
-      final isBeginner = state.sessionsStartedCount < 2 || captured < 5;
-      final isEarly = state.sessionsStartedCount <= 6 || captured <= 30;
-      return (isBeginner || isEarly)
-          ? HudPersonality.guided
-          : HudPersonality.pro;
+      // MVP: Auto always resolves to Guided so new users get the
+      // simplified trail-first experience.
+      return HudPersonality.guided;
   }
 }
 
@@ -68,6 +62,7 @@ const _prefsUnlockedMilestones = 'unlocked_milestones_v1';
 const _prefsHudPreference = 'hud_preference_v1';
 const _prefsSessionsStarted = 'sessions_started_count_v1';
 const _prefsShowPreviewEnemyTiles = 'show_preview_enemy_tiles_v1';
+const _prefsSessionActivityMode = 'session_activity_mode_v1';
 
 class GameStateNotifier extends Notifier<GameState> {
   @override
@@ -243,11 +238,16 @@ class GameStateNotifier extends Notifier<GameState> {
 
   // ─── Session lifecycle ───────────────────────────────────
 
-  void startSession({double? lastLat, double? lastLng}) {
+  void startSession({
+    double? lastLat,
+    double? lastLng,
+    ActivityMode activityMode = ActivityMode.walkRun,
+  }) {
     state = state.copyWith(
       sessionActive: true,
       sessionsStartedCount: state.sessionsStartedCount + 1,
       sessionStartedAt: DateTime.now(),
+      sessionActivityMode: activityMode,
       sessionDistanceMeters: 0,
       sessionTilesCaptured: 0,
       sessionTilesRefreshed: 0,
@@ -267,6 +267,7 @@ class GameStateNotifier extends Notifier<GameState> {
   void stopSession() {
     state = state.copyWith(
       sessionActive: false,
+      sessionActivityMode: ActivityMode.walkRun,
     );
   }
 
@@ -393,6 +394,7 @@ class GameStateNotifier extends Notifier<GameState> {
     final hudPrefRaw = prefs.getString(_prefsHudPreference);
     final sessionsStarted = prefs.getInt(_prefsSessionsStarted) ?? 0;
     final showPreview = prefs.getBool(_prefsShowPreviewEnemyTiles) ?? true;
+    final activityModeRaw = prefs.getString(_prefsSessionActivityMode);
     final milestones =
         prefs.getStringList(_prefsUnlockedMilestones) ?? const [];
 
@@ -407,6 +409,9 @@ class GameStateNotifier extends Notifier<GameState> {
       sessionStartedAt:
           startedAtRaw == null ? null : DateTime.tryParse(startedAtRaw),
       sessionsStartedCount: sessionsStarted,
+      sessionActivityMode: activityModeRaw == 'ride'
+          ? ActivityMode.ride
+          : ActivityMode.walkRun,
       hudPreference: hudPref,
       showPreviewEnemyTiles: showPreview,
       unlockedMilestoneIds: {...milestones},
@@ -416,6 +421,10 @@ class GameStateNotifier extends Notifier<GameState> {
   Future<void> saveToPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefsSessionActive, state.sessionActive);
+    await prefs.setString(
+      _prefsSessionActivityMode,
+      state.sessionActivityMode == ActivityMode.ride ? 'ride' : 'walkRun',
+    );
     final hudPrefRaw = switch (state.hudPreference) {
       HudPreference.auto => 'auto',
       HudPreference.guided => 'guided',
@@ -438,4 +447,52 @@ class GameStateNotifier extends Notifier<GameState> {
     final milestoneValues = state.unlockedMilestoneIds.toList()..sort();
     await prefs.setStringList(_prefsUnlockedMilestones, milestoneValues);
   }
+}
+
+/// Mode-specific tuning constants.
+///
+/// Mode-specific tuning for Walk/Run vs Ride.
+///
+/// Walk/Run values are the established defaults.
+/// Ride v1 uses modestly more forgiving timings and wider spatial range
+/// to account for faster movement speed on a bike.
+class ActivityModeConfig {
+  final ActivityMode mode;
+  const ActivityModeConfig(this.mode);
+
+  /// Auto-capture dwell time before a tile is eligible.
+  Duration get autoCaptureDwellTime => switch (mode) {
+    ActivityMode.walkRun => const Duration(seconds: 5),
+    ActivityMode.ride    => const Duration(seconds: 3),
+  };
+
+  /// Minimum gap between successive auto-capture attempts.
+  Duration get autoCaptureDebounce => switch (mode) {
+    ActivityMode.walkRun => const Duration(seconds: 4),
+    ActivityMode.ride    => const Duration(seconds: 2),
+  };
+
+  /// Per-tile cooldown after a capture attempt.
+  Duration get autoCaptureTileCooldown => switch (mode) {
+    ActivityMode.walkRun => const Duration(seconds: 12),
+    ActivityMode.ride    => const Duration(seconds: 8),
+  };
+
+  /// How far to search for recommendation targets.
+  double get maxRecommendationDistanceMeters => switch (mode) {
+    ActivityMode.walkRun => 500,
+    ActivityMode.ride    => 800,
+  };
+
+  /// Default follow-me camera zoom.
+  double get defaultCameraZoom => switch (mode) {
+    ActivityMode.walkRun => 15.2,
+    ActivityMode.ride    => 14.8,
+  };
+
+  /// First-capture guided-mode camera zoom.
+  double get firstCaptureCameraZoom => switch (mode) {
+    ActivityMode.walkRun => 16.1,
+    ActivityMode.ride    => 15.6,
+  };
 }

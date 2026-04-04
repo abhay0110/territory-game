@@ -55,13 +55,14 @@ class MapController {
     double latitude,
     double longitude, {
     required bool moveCamera,
+    double? zoom,
   }) {
     if (!moveCamera) return null;
 
     return MapCameraUpdate(
       latitude: latitude,
       longitude: longitude,
-      zoom: defaultCameraZoom,
+      zoom: zoom ?? defaultCameraZoom,
       durationMs: defaultCameraDurationMs,
     );
   }

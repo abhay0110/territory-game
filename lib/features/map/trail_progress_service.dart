@@ -114,7 +114,7 @@ class TrailProgressService {
         }
       }
 
-      if (owned > 0 && !segments.isEmpty) {
+      if (owned > 0 && segments.isNotEmpty) {
         final boundaryCandidates = <int>{};
         for (final seg in segments) {
           final left = seg.start - 1;

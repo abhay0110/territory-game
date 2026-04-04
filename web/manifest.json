@@ -1,6 +1,6 @@
 {
-    "name": "territory_game",
-    "short_name": "territory_game",
+    "name": "HexTrail",
+    "short_name": "HexTrail",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

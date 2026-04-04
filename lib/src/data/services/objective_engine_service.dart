@@ -1,7 +1,7 @@
-import 'package:territory_game/models/objective_state.dart';
-import 'package:territory_game/models/game_tile.dart';
-import 'package:territory_game/models/trail_progress.dart';
-import 'package:territory_game/models/trail_section.dart';
+import 'package:HexTrail/models/objective_state.dart';
+import 'package:HexTrail/models/game_tile.dart';
+import 'package:HexTrail/models/trail_progress.dart';
+import 'package:HexTrail/models/trail_section.dart';
 
 /// Evaluates current game state and provides objective guidance for Guided mode.
 class ObjectiveEngineService {

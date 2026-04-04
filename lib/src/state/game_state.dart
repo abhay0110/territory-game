@@ -8,6 +8,7 @@ class GameState {
   // ─── Session ──────────────────────────────────────────────
   final bool sessionActive;
   final DateTime? sessionStartedAt;
+  final ActivityMode sessionActivityMode;
   final double sessionDistanceMeters;
   final int sessionTilesCaptured;
   final int sessionTilesRefreshed;
@@ -70,6 +71,7 @@ class GameState {
   const GameState({
     this.sessionActive = false,
     this.sessionStartedAt,
+    this.sessionActivityMode = ActivityMode.walkRun,
     this.sessionDistanceMeters = 0,
     this.sessionTilesCaptured = 0,
     this.sessionTilesRefreshed = 0,
@@ -120,6 +122,7 @@ class GameState {
   GameState copyWith({
     bool? sessionActive,
     DateTime? sessionStartedAt,
+    ActivityMode? sessionActivityMode,
     double? sessionDistanceMeters,
     int? sessionTilesCaptured,
     int? sessionTilesRefreshed,
@@ -169,6 +172,8 @@ class GameState {
     return GameState(
       sessionActive: sessionActive ?? this.sessionActive,
       sessionStartedAt: sessionStartedAt ?? this.sessionStartedAt,
+      sessionActivityMode:
+          sessionActivityMode ?? this.sessionActivityMode,
       sessionDistanceMeters:
           sessionDistanceMeters ?? this.sessionDistanceMeters,
       sessionTilesCaptured:
@@ -238,3 +243,6 @@ enum HudPreference { auto, guided, pro }
 
 /// The resolved runtime HUD personality after auto-detection.
 enum HudPersonality { guided, pro }
+
+/// Session activity mode — determines movement-model tuning.
+enum ActivityMode { walkRun, ride }

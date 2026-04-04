@@ -5,6 +5,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
 import '../../../core/constants/game_colors.dart';
+import '../../../core/constants/launch_corridor.dart';
 import '../../../models/game_tile.dart';
 
 class MapRenderService {
@@ -14,6 +15,7 @@ class MapRenderService {
   final int h3Resolution;
 
   mb.MapboxMap? _map;
+  mb.PolygonAnnotationManager? _corridorMgr;
   mb.PolygonAnnotationManager? _currentMgr;
   mb.PolygonAnnotationManager? _capturedMgr;
   mb.PolygonAnnotationManager? _selectionMgr;
@@ -23,10 +25,17 @@ class MapRenderService {
   mb.PolygonAnnotation? _selectionPoly;
   mb.PolygonAnnotation? _recommendationHaloPoly;
   mb.PolygonAnnotation? _recommendationPoly;
+  final List<mb.PolygonAnnotation> _corridorPolys = [];
+  bool _corridorLaneDrawn = false;
 
   final Map<String, mb.PolygonAnnotation> _capturedPolyByHex = {};
   final Set<String> _visibleCapturedHex = {};
   final Map<String, ({double lat, double lng})> _centroidCache = {};
+
+  /// When true, off-corridor captured tiles are rendered very faintly and the
+  /// corridor lane is drawn with stronger emphasis.  Set by the map screen
+  /// when the user is in the far-from-trail launch-entry state.
+  bool launchEntryMode = false;
 
   Set<String> get visibleCapturedHex => _visibleCapturedHex;
 
@@ -40,6 +49,13 @@ class MapRenderService {
       GameColors.rivalOutlineDarkArgb;
   static const int _currentOutlineColor = GameColors.currentBorderArgb;
 
+  // ── Launch-entry muting ────────────────────────────────────────────────
+
+  static const int _mutedFillColor = 0xFF555555; // desaturated grey
+  static const int _mutedOutlineColor = 0xFF333333;
+  static const double _mutedOpacityScale = 0.08; // 8% of normal — strongly muted
+  static const int _mutedCurrentOutlineColor = 0xFF777777; // dimmed outline for user tile when muted
+
   ({int fillColor, double opacity, int outlineColor}) _styleForTile(
     GameTile tile, {
     required bool isCurrent,
@@ -48,32 +64,45 @@ class MapRenderService {
     final isProtected =
         tile.protectedUntil != null && tile.protectedUntil!.isAfter(now);
 
-    final fillColor = switch (tile.ownership) {
-      TileOwnership.mine =>
-        isProtected ? _colorMineProtected : _colorMineExpired,
-      TileOwnership.enemy =>
-        isProtected ? _colorEnemyProtected : _colorEnemyCapturable,
-      TileOwnership.neutral => _colorNeutral,
-    };
+    // In launch-entry mode, off-corridor tiles are desaturated and ghosted.
+    final onCorridor = LaunchCorridor.isOnCorridor(tile.h3Index.toLowerCase());
+    final mute = launchEntryMode && !onCorridor;
 
-    final opacity = switch (tile.ownership) {
+    final fillColor = mute
+        ? _mutedFillColor
+        : switch (tile.ownership) {
+            TileOwnership.mine =>
+              isProtected ? _colorMineProtected : _colorMineExpired,
+            TileOwnership.enemy =>
+              isProtected ? _colorEnemyProtected : _colorEnemyCapturable,
+            TileOwnership.neutral => _colorNeutral,
+          };
+
+    final baseOpacity = switch (tile.ownership) {
       TileOwnership.mine =>
         isCurrent ? (isProtected ? 0.52 : 0.42) : (isProtected ? 0.34 : 0.24),
       TileOwnership.enemy =>
         isCurrent ? (isProtected ? 0.50 : 0.40) : (isProtected ? 0.32 : 0.20),
       TileOwnership.neutral => isCurrent ? 0.48 : 0.30,
     };
+    final opacity = mute ? baseOpacity * _mutedOpacityScale : baseOpacity;
 
-    final baseOutline = switch (tile.ownership) {
-      TileOwnership.enemy =>
-        isProtected ? _outlineColor : _enemyCapturableOutlineColor,
-      _ => _outlineColor,
-    };
+    final baseOutline = mute
+        ? _mutedOutlineColor
+        : switch (tile.ownership) {
+            TileOwnership.enemy =>
+              isProtected ? _outlineColor : _enemyCapturableOutlineColor,
+            _ => _outlineColor,
+          };
+
+    final outlineColor = isCurrent
+        ? (mute ? _mutedCurrentOutlineColor : _currentOutlineColor)
+        : baseOutline;
 
     return (
       fillColor: fillColor,
       opacity: opacity,
-      outlineColor: isCurrent ? _currentOutlineColor : baseOutline,
+      outlineColor: outlineColor,
     );
   }
 
@@ -88,6 +117,8 @@ class MapRenderService {
   Future<void> _ensureManagers() async {
     if (_map == null) return;
 
+    // Corridor lane is created first so it renders below everything.
+    _corridorMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _currentMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _capturedMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _selectionMgr ??= await _map!.annotations.createPolygonAnnotationManager();
@@ -345,6 +376,49 @@ class MapRenderService {
     if (_selectionPoly == null || _selectionMgr == null) return;
     await _selectionMgr!.delete(_selectionPoly!);
     _selectionPoly = null;
+  }
+
+  // ── Corridor lane (active trail highlight) ──
+
+  static const int _corridorLaneColor = 0xFF49D6FF; // cyan, same family as glow
+  static const int _corridorLaneOutline = 0xFF2EC4E6; // brighter outline for active feel
+  static const double _corridorLaneOpacity = 0.25; // prominent enough to anchor the trail visually
+
+  /// Draw the active launch corridor as a subtle lane overlay.
+  ///
+  /// Each hex is drawn with very low opacity so the trail path is visible
+  /// without dominating captured/glow annotations.
+  Future<void> drawCorridorLane(List<String> hexes) async {
+    if (_corridorLaneDrawn) return;
+    await _ensureManagers();
+    if (_corridorMgr == null) return;
+
+    for (final hex in hexes) {
+      try {
+        final cell = BigInt.parse(hex, radix: 16);
+        final opts = _polygonOptionsForCell(
+          cell,
+          fillColor: _corridorLaneColor,
+          outlineColor: _corridorLaneOutline,
+          opacity: _corridorLaneOpacity,
+        );
+        final poly = await _corridorMgr!.create(opts);
+        _corridorPolys.add(poly);
+      } catch (_) {}
+    }
+    _corridorLaneDrawn = true;
+  }
+
+  /// Remove the corridor lane overlay.
+  Future<void> clearCorridorLane() async {
+    if (!_corridorLaneDrawn || _corridorMgr == null) return;
+    for (final poly in _corridorPolys) {
+      try {
+        await _corridorMgr!.delete(poly);
+      } catch (_) {}
+    }
+    _corridorPolys.clear();
+    _corridorLaneDrawn = false;
   }
 
   // accentPrimary cyan: 0xFF49D6FF

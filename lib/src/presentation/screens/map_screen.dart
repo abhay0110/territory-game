@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,11 +8,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3;
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/constants/game_colors.dart';
 import '../../../core/constants/game_rules.dart';
+import '../../../core/constants/launch_corridor.dart';
+import '../../../core/constants/valid_trail_hexes.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/game_tile.dart';
 import '../../../models/trail_progress.dart';
@@ -24,17 +28,23 @@ import '../../data/services/capture_service.dart';
 import '../../data/services/location_service.dart';
 import '../../data/services/map_event_log_service.dart';
 import '../../data/services/map_render_service.dart';
+import '../../data/services/milestone_evaluator.dart';
 import '../../data/services/objective_engine_service.dart';
+import '../../data/services/recommendation_scoring_service.dart';
+import '../../data/services/trail_leaderboard_service.dart';
 import '../../state/game_state.dart';
 import '../../state/game_state_notifier.dart';
 import '../widgets/capture_feedback_overlay.dart';
 import '../widgets/frosted_overlay_card.dart';
-import '../widgets/guided_overlay_card.dart';
+import '../widgets/guided_cta_panel.dart';
+import '../widgets/guided_top_hud.dart';
 import '../widgets/hud_pill.dart';
-import '../widgets/leaderboard_dialog.dart';
+import '../widgets/selected_tile_info_card.dart';
 import '../widgets/map_legend.dart';
 import '../widgets/section_progress_dialog.dart';
 import '../widgets/tile_details_dialog.dart';
+import '../widgets/trail_leaderboard_sheet.dart';
+import '../widgets/welcome_dialog.dart';
 
 // HudPreference and HudPersonality are now in game_state.dart, re-exported here
 // for backward compat with widget code that references them directly.
@@ -47,7 +57,522 @@ class MapScreen extends ConsumerStatefulWidget {
   ConsumerState<MapScreen> createState() => _MapScreenState();
 }
 
+class _SummaryStat {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool hero;
+  const _SummaryStat(this.icon, this.label, this.value, {this.hero = false});
+}
 
+Color _sectionBarColor(SectionControlState state) {
+  switch (state) {
+    case SectionControlState.you:
+      return GameUiTokens.accentSecondary;
+    case SectionControlState.rival:
+      return GameUiTokens.danger;
+    case SectionControlState.contested:
+      return GameUiTokens.warning;
+    case SectionControlState.unclaimed:
+      return GameUiTokens.accentPrimary.withOpacity(0.50);
+  }
+}
+
+/// Animated session summary card with entrance fade+scale+slide and staggered
+/// content reveal. Shared by Walk/Run and Ride.
+class _AnimatedSessionSummary extends StatefulWidget {
+  final bool riding;
+  final String title;
+  final String subtitle;
+  final String distanceText;
+  final String timeText;
+  final int tilesCaptured;
+  final List<_SummaryStat> stats;
+  final TrailProgress? primaryTrail;
+  final List<TrailSectionProgress> trailSections;
+  final VoidCallback onShare;
+  final VoidCallback? onLeaderboard;
+
+  const _AnimatedSessionSummary({
+    required this.riding,
+    required this.title,
+    required this.subtitle,
+    required this.distanceText,
+    required this.timeText,
+    required this.tilesCaptured,
+    required this.stats,
+    required this.primaryTrail,
+    required this.trailSections,
+    required this.onShare,
+    this.onLeaderboard,
+  });
+
+  @override
+  State<_AnimatedSessionSummary> createState() =>
+      _AnimatedSessionSummaryState();
+}
+
+class _AnimatedSessionSummaryState extends State<_AnimatedSessionSummary>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _cardFade;
+  late final Animation<double> _cardScale;
+  late final Animation<Offset> _cardSlide;
+
+  // Stagger slots: header, hero, each regular stat, trail bar, buttons.
+  // We pre-build an interval list so each group fades in sequentially.
+  static const _totalMs = 420;
+  static const _staggerMs = 40;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: _totalMs),
+    );
+    _cardFade = CurvedAnimation(
+      parent: _ctrl,
+      curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+    );
+    _cardScale = Tween<double>(begin: 0.92, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _ctrl,
+        curve: const Interval(0.0, 0.55, curve: Curves.easeOutCubic),
+      ),
+    );
+    _cardSlide = Tween<Offset>(begin: const Offset(0, 0.06), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: _ctrl,
+            curve: const Interval(0.0, 0.55, curve: Curves.easeOutCubic),
+          ),
+        );
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// Returns opacity animation for stagger slot [index] (0-based).
+  Animation<double> _slotFade(int index) {
+    final startFrac = (index * _staggerMs) / _totalMs;
+    final endFrac = ((index * _staggerMs) + 180) / _totalMs;
+    return CurvedAnimation(
+      parent: _ctrl,
+      curve: Interval(
+        startFrac.clamp(0.0, 1.0),
+        endFrac.clamp(0.0, 1.0),
+        curve: Curves.easeOut,
+      ),
+    );
+  }
+
+  Widget _staggerWrap(int slot, Widget child) {
+    return FadeTransition(opacity: _slotFade(slot), child: child);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final riding = widget.riding;
+    final stats = widget.stats;
+    final primaryTrail = widget.primaryTrail;
+    final trailSections = widget.trailSections;
+
+    // Assign stagger slots:
+    // 0 = header (icon + title + subtitle)
+    // 1 = divider + hero stat
+    // 2..n = regular stat rows
+    // n+1 = trail bar (if present)
+    // n+2 = buttons
+    var slot = 0;
+    final headerSlot = slot++;
+    final heroSlot = slot++;
+    final regularStartSlot = slot;
+    final regularCount = stats.where((s) => !s.hero).length;
+    slot += regularCount;
+    final trailSlot = slot++;
+    final buttonSlot = slot++;
+
+    return FadeTransition(
+      opacity: _cardFade,
+      child: SlideTransition(
+        position: _cardSlide,
+        child: ScaleTransition(
+          scale: _cardScale,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Material(
+                color: Colors.transparent,
+                child: FrostedOverlayCard(
+                  emphasized: true,
+                  borderRadius: const BorderRadius.all(Radius.circular(18)),
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // ── Mode icon + title ──
+                      _staggerWrap(
+                        headerSlot,
+                        Column(
+                          children: [
+                            Icon(
+                              riding ? Icons.pedal_bike : Icons.directions_walk,
+                              color: GameUiTokens.accentPrimary,
+                              size: 28,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              widget.title,
+                              style: GameUiText.command(
+                                color: GameUiTokens.accentPrimary,
+                                size: 16,
+                                letterSpacing: 1.5,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              widget.subtitle,
+                              style: GameUiText.meta(
+                                color: GameUiTokens.textMid,
+                                size: 11,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // ── Divider + stats ──
+                      _staggerWrap(
+                        heroSlot,
+                        Column(
+                          children: [
+                            Container(
+                              height: 1,
+                              color: GameUiTokens.panelBorder.withOpacity(0.50),
+                            ),
+                            const SizedBox(height: 12),
+                            // Hero stat (first hero in list)
+                            ...stats
+                                .where((s) => s.hero)
+                                .map(
+                                  (s) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: Column(
+                                      children: [
+                                        Text(
+                                          s.value,
+                                          style: GameUiText.command(
+                                            color: GameUiTokens.accentSecondary,
+                                            size: 26,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          s.label.toUpperCase(),
+                                          style: GameUiText.meta(
+                                            color: GameUiTokens.textMid,
+                                            size: 10,
+                                            weight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                          ],
+                        ),
+                      ),
+                      // ── Regular stat rows (individually staggered) ──
+                      ...() {
+                        var idx = 0;
+                        return stats.where((s) => !s.hero).map((s) {
+                          final thisSlot = regularStartSlot + idx;
+                          idx++;
+                          return _staggerWrap(
+                            thisSlot,
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 5),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    s.icon,
+                                    size: 16,
+                                    color: GameUiTokens.textMid,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      s.label,
+                                      style: GameUiText.meta(
+                                        color: GameUiTokens.textMid,
+                                        size: 12,
+                                        weight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    s.value,
+                                    style: GameUiText.body(
+                                      color: GameUiTokens.textHi,
+                                      size: 14,
+                                      weight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList();
+                      }(),
+                      // ── Trail-segment progress bar ──
+                      if (primaryTrail != null && trailSections.isNotEmpty)
+                        _staggerWrap(
+                          trailSlot,
+                          Column(
+                            children: [
+                              const SizedBox(height: 14),
+                              Container(
+                                height: 1,
+                                color: GameUiTokens.panelBorder.withOpacity(
+                                  0.50,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      primaryTrail.trail.name,
+                                      style: GameUiText.meta(
+                                        color: GameUiTokens.textMid,
+                                        size: 11,
+                                        weight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    '${primaryTrail.completionPercent.toStringAsFixed(0)}%',
+                                    style: GameUiText.body(
+                                      color: GameUiTokens.accentSecondary,
+                                      size: 12,
+                                      weight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  for (
+                                    var i = 0;
+                                    i < trailSections.length;
+                                    i++
+                                  ) ...[
+                                    if (i > 0) const SizedBox(width: 3),
+                                    Expanded(
+                                      child: Column(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              3,
+                                            ),
+                                            child: SizedBox(
+                                              height: 6,
+                                              child: LinearProgressIndicator(
+                                                value:
+                                                    trailSections[i]
+                                                            .totalTiles >
+                                                        0
+                                                    ? trailSections[i]
+                                                              .ownedTiles /
+                                                          trailSections[i]
+                                                              .totalTiles
+                                                    : 0,
+                                                backgroundColor: GameUiTokens
+                                                    .bg0
+                                                    .withOpacity(0.60),
+                                                valueColor:
+                                                    AlwaysStoppedAnimation<
+                                                      Color
+                                                    >(
+                                                      _sectionBarColor(
+                                                        trailSections[i]
+                                                            .controlState,
+                                                      ),
+                                                    ),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            trailSections[i].section.name
+                                                .replaceFirst(
+                                                  '${primaryTrail.trail.name} ',
+                                                  '',
+                                                ),
+                                            style: GameUiText.meta(
+                                              color: GameUiTokens.textLow,
+                                              size: 9,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 18),
+                      // ── Action buttons ──
+                      _staggerWrap(
+                        buttonSlot,
+                        Column(
+                          children: [
+                            // Leaderboard button — full-width above Share/Done.
+                            if (widget.onLeaderboard != null) ...[
+                              SizedBox(
+                                width: double.infinity,
+                                child: TextButton(
+                                  style: TextButton.styleFrom(
+                                    backgroundColor: GameUiTokens
+                                        .accentPrimary
+                                        .withOpacity(0.10),
+                                    foregroundColor:
+                                        GameUiTokens.accentPrimary,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                      side: BorderSide(
+                                        color: GameUiTokens.accentPrimary
+                                            .withOpacity(0.25),
+                                      ),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                  onPressed: widget.onLeaderboard,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Text('🏆', style: TextStyle(fontSize: 14)),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'LEADERBOARD',
+                                        style: GameUiText.command(
+                                          color: GameUiTokens.accentPrimary,
+                                          size: 12,
+                                          letterSpacing: 0.8,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextButton(
+                                    style: TextButton.styleFrom(
+                                      backgroundColor:
+                                          GameUiTokens.bg2.withOpacity(0.60),
+                                      foregroundColor: GameUiTokens.textMid,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(10),
+                                        side: BorderSide(
+                                          color: GameUiTokens.panelBorder
+                                              .withOpacity(0.60),
+                                        ),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    onPressed: widget.onShare,
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.share,
+                                          size: 14,
+                                          color: GameUiTokens.textMid,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'SHARE',
+                                          style: GameUiText.command(
+                                            color: GameUiTokens.textMid,
+                                            size: 12,
+                                            letterSpacing: 0.8,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: TextButton(
+                                    style: TextButton.styleFrom(
+                                      backgroundColor: GameUiTokens
+                                          .accentPrimary
+                                          .withOpacity(0.12),
+                                      foregroundColor:
+                                          GameUiTokens.accentPrimary,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(10),
+                                        side: BorderSide(
+                                          color: GameUiTokens.accentPrimary
+                                              .withOpacity(0.30),
+                                        ),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(),
+                                    child: Text(
+                                      'DONE',
+                                      style: GameUiText.command(
+                                        color: GameUiTokens.accentPrimary,
+                                        size: 13,
+                                        letterSpacing: 1.0,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _MapScreenState extends ConsumerState<MapScreen> {
   mb.MapboxMap? _map;
@@ -69,11 +594,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   // ── Session state (single source of truth in Riverpod) ──
   bool get _sessionActive => ref.read(gameStateProvider).sessionActive;
-  DateTime? get _sessionStartedAt => ref.read(gameStateProvider).sessionStartedAt;
-  double get _sessionDistanceMeters => ref.read(gameStateProvider).sessionDistanceMeters;
-  int get _sessionTilesCaptured => ref.read(gameStateProvider).sessionTilesCaptured;
-  int get _sessionTilesRefreshed => ref.read(gameStateProvider).sessionTilesRefreshed;
-  int get _sessionRivalBlocked => ref.read(gameStateProvider).sessionRivalBlocked;
+  DateTime? get _sessionStartedAt =>
+      ref.read(gameStateProvider).sessionStartedAt;
+  double get _sessionDistanceMeters =>
+      ref.read(gameStateProvider).sessionDistanceMeters;
+  int get _sessionTilesCaptured =>
+      ref.read(gameStateProvider).sessionTilesCaptured;
+  int get _sessionTilesRefreshed =>
+      ref.read(gameStateProvider).sessionTilesRefreshed;
+  int get _sessionRivalBlocked =>
+      ref.read(gameStateProvider).sessionRivalBlocked;
   int get _sessionTakeovers => ref.read(gameStateProvider).sessionTakeovers;
   DateTime? _lastAutoCaptureAttemptAt;
   final Map<String, DateTime> _recentAutoCaptureByHex = {};
@@ -86,24 +616,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   static const int h3Resolution = 9;
   double _visibleRadiusMeters = GameRules.visibleCapturedRadiusMeters;
-  static const double _recommendScoreMax = 100;
-  static const double _recommendScoreBase = 26;
-  static const double _recommendDistancePenaltyMax = 28;
-  static const double _recommendStreakBonus = 24;
-  static const double _recommendSectionPressureBonus = 18;
-  static const double _recommendSectionFlipBonus = 22;
-  static const double _recommendAtRiskDefenseBonus = 14;
-  static const double _recommendStrengthenLeadBonus = 10;
-  static const double _recommendNeutralBonus = 4;
-  static const double _recommendRivalBonus = 2;
-  static const double _recommendSwitchMargin = 6;
-  static const double _recommendTieHoldMargin = 2;
-  static const Duration _autoCaptureDebounce = Duration(seconds: 4);
-  static const Duration _autoCaptureTileCooldown = Duration(seconds: 12);
-  static const Duration _autoCaptureDwellTime = Duration(seconds: 5);
+
+  /// Pre-session activity-mode selection (Walk/Run default).
+  ActivityMode _selectedActivityMode = ActivityMode.walkRun;
+
+  /// Activity-mode-aware configuration for the current session.
+  ActivityModeConfig get _modeConfig =>
+      ActivityModeConfig(ref.read(gameStateProvider).sessionActivityMode);
+
+  /// Whether the active (or selected) session mode is Ride.
+  bool get _isRiding =>
+      (_sessionActive
+          ? ref.read(gameStateProvider).sessionActivityMode
+          : _selectedActivityMode) ==
+      ActivityMode.ride;
+
   // Prefs keys managed by provider are in GameStateNotifier.
   // Only auto-capture local key remains here.
   static const String _prefsSessionLastHex = 'session_last_hex_v1';
+  static const String _prefsOnboardingShown = 'onboarding_shown_v1';
   static const int _totalMilestoneCount = 8;
 
   late final CaptureService _captureService;
@@ -116,12 +647,17 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   List<TrailProgress> _trailProgress = const [];
   List<TrailSectionProgress> _sectionProgress = const [];
   // ── Milestones & session milestones (single source of truth in Riverpod) ──
-  Set<String> get _unlockedMilestoneIds => ref.read(gameStateProvider).unlockedMilestoneIds;
-  List<String> get _sessionMilestones => ref.read(gameStateProvider).sessionMilestones;
+  Set<String> get _unlockedMilestoneIds =>
+      ref.read(gameStateProvider).unlockedMilestoneIds;
+  List<String> get _sessionMilestones =>
+      ref.read(gameStateProvider).sessionMilestones;
   // Migrated to provider — getters for backward-compat with build helpers.
-  bool get _capturePulseActive => ref.read(gameStateProvider).capturePulseActive;
-  String? get _captureFeedbackText => ref.read(gameStateProvider).captureFeedbackText;
-  bool get _captureFeedbackSuccess => ref.read(gameStateProvider).captureFeedbackSuccess;
+  bool get _capturePulseActive =>
+      ref.read(gameStateProvider).capturePulseActive;
+  String? get _captureFeedbackText =>
+      ref.read(gameStateProvider).captureFeedbackText;
+  bool get _captureFeedbackSuccess =>
+      ref.read(gameStateProvider).captureFeedbackSuccess;
   Timer? _capturePulseTimer;
   bool _legendVisible = false;
   bool _actionRailVisible = false;
@@ -129,7 +665,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   bool _bottomHudVisible = false;
   bool _compactHud = false;
   bool _showRecommendationDebug = false;
-  int get _sessionsStartedCount => ref.read(gameStateProvider).sessionsStartedCount;
+  int get _sessionsStartedCount =>
+      ref.read(gameStateProvider).sessionsStartedCount;
   Timer? _hudIntroTimer;
   Timer? _actionRailIntroTimer;
   Timer? _mapLegendIntroTimer;
@@ -138,11 +675,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   Timer? _selectedTileTicker;
   Timer? _recommendedTilePulseTimer;
   String? _recommendedTileHex;
+  ({double lat, double lng})? _recommendedGuidancePoint;
   int _recommendedGlowSyncToken = 0;
   bool _recommendedPulseOn = false;
   // Migrated to provider — getters for backward-compat.
-  bool get _showPostCaptureGuidance => ref.read(gameStateProvider).showPostCaptureGuidance;
-  bool get _guidedCameraCenteredOnce => ref.read(gameStateProvider).guidedCameraCenteredOnce;
+  bool get _showPostCaptureGuidance =>
+      ref.read(gameStateProvider).showPostCaptureGuidance;
+  bool get _guidedCameraCenteredOnce =>
+      ref.read(gameStateProvider).guidedCameraCenteredOnce;
   Timer? _captureFeedbackTimer;
   Timer? _postCaptureHintTimer;
 
@@ -150,6 +690,17 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   List<GameTile> _visibleTiles = const [];
 
   Timer? _nearbyRefreshTimer;
+
+  // ── Launch corridor (one-trail-first) ──
+  String? _corridorEntryHex;
+  double _corridorEntryDistanceMeters = double.infinity;
+  bool _showLaunchBanner = false;
+  bool _corridorLaneRequested = false;
+
+  // ── Leaderboard teaser (lightweight prefetch) ──
+  int? _leaderboardRank;
+  int? _leaderboardTiles;
+  Timer? _leaderboardRefreshTimer;
 
   int _simStep = 0;
   double? _simBaseLat;
@@ -214,7 +765,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     _initializeMapController();
     // Milestones now load via loadFromPrefs() inside _bootstrapInstantFirstCapture.
     unawaited(_bootstrapInstantFirstCapture());
-    _updateCurrentObjective();
+    // Defer objective update so it does not mutate a provider while the
+    // widget tree is still building (Riverpod guard).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateCurrentObjective();
+    });
   }
 
   @override
@@ -231,6 +787,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     _recommendedTilePulseTimer?.cancel();
     _captureFeedbackTimer?.cancel();
     _postCaptureHintTimer?.cancel();
+    _leaderboardRefreshTimer?.cancel();
     _mapRenderService.dispose();
     super.dispose();
   }
@@ -316,12 +873,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     if (isCurrentTile && _currentTile.isNotEmpty) {
       _showCaptureFeedback(
-        'Hold position or keep moving - auto-capture is live',
+        _isRiding
+            ? 'Keep riding — auto-capture is live'
+            : 'Hold position or keep moving - auto-capture is live',
       );
       return;
     }
 
-    _showCaptureFeedback('Move to the glowing tile');
+    _showCaptureFeedback(
+      _isRiding ? 'Ride to the glowing tile' : 'Move to the glowing tile',
+    );
   }
 
   void _dismissSelection() {
@@ -347,6 +908,95 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
+  /// Compute the nearest Burke-Gilman entry hex and draw the corridor lane.
+  void _resolveCorridorEntry(double lat, double lng) {
+    final entry = LaunchCorridor.nearestEntry(
+      lat,
+      lng,
+      haversine: MapRenderService.haversineMeters,
+      cellCentroid: _mapRenderService.cellCentroid,
+    );
+    if (entry == null) return;
+
+    _corridorEntryHex = entry.hex;
+    _corridorEntryDistanceMeters = entry.distanceMeters;
+
+    // Show launch banner when user is far enough that normal reco won't fire.
+    // Guard: only set once so repeated location updates don't re-assert.
+    if (!_showLaunchBanner &&
+        entry.distanceMeters > _modeConfig.maxRecommendationDistanceMeters) {
+      _showLaunchBanner = true;
+      _mapRenderService.launchEntryMode = true;
+    }
+
+    _drawCorridorLaneIfNeeded();
+  }
+
+  Future<void> _drawCorridorLaneIfNeeded() async {
+    if (_corridorLaneRequested || _map == null) return;
+    _corridorLaneRequested = true;
+    // Use the wider display set for visual continuity; playable set is unchanged.
+    await _mapRenderService.drawCorridorLane(
+      LaunchCorridor.displayHexes.toList(),
+    );
+  }
+
+  /// Fly camera to frame both user and nearest corridor entry so the user
+  /// can visually see which part of the trail they are heading toward.
+  ///
+  /// Uses Mapbox `cameraForCoordinateBounds` to compute the optimal zoom
+  /// and center.  Clamps zoom to [11, 15] so we never show the full city
+  /// and never zoom in too tight.
+  Future<void> _maybeFlyToCorridorOverview(
+    double userLat,
+    double userLng,
+  ) async {
+    if (_corridorEntryHex == null) return;
+    if (_corridorEntryDistanceMeters <=
+        _modeConfig.maxRecommendationDistanceMeters)
+      return;
+    final map = _map;
+    if (map == null) return;
+
+    try {
+      final cell = BigInt.parse(_corridorEntryHex!, radix: 16);
+      final entry = _mapRenderService.cellCentroid(cell, _corridorEntryHex!);
+
+      final sw = mb.Point(
+        coordinates: mb.Position(
+          math.min(userLng, entry.lng),
+          math.min(userLat, entry.lat),
+        ),
+      );
+      final ne = mb.Point(
+        coordinates: mb.Position(
+          math.max(userLng, entry.lng),
+          math.max(userLat, entry.lat),
+        ),
+      );
+
+      final camera = await map.cameraForCoordinateBounds(
+        mb.CoordinateBounds(
+          southwest: sw,
+          northeast: ne,
+          infiniteBounds: false,
+        ),
+        mb.MbxEdgeInsets(top: 120, left: 64, bottom: 180, right: 64),
+        null, // bearing
+        null, // pitch
+        15.0, // maxZoom — never tighter than neighbourhood level
+        null, // offset
+      );
+
+      final zoom = (camera.zoom ?? 13.0).clamp(11.0, 15.0);
+
+      map.flyTo(
+        mb.CameraOptions(center: camera.center, zoom: zoom, pitch: 40),
+        mb.MapAnimationOptions(duration: 1200),
+      );
+    } catch (_) {}
+  }
+
   Future<void> _loadSessionState() async {
     // Load persisted session, HUD, and milestone state into the provider.
     await ref.read(gameStateProvider.notifier).loadFromPrefs();
@@ -365,24 +1015,53 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         'Session restored after app resume/reopen',
         metadata: {'lastHex': _lastSessionCaptureAttemptHex},
       );
+      _startLeaderboardRefreshTimer();
     }
+  }
+
+  /// Shows the welcome dialog exactly once (first-run onboarding).
+  Future<void> _maybeShowOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    final shown = prefs.getBool(_prefsOnboardingShown) ?? false;
+    if (shown || !mounted) return;
+    await prefs.setBool(_prefsOnboardingShown, true);
+    if (!mounted) return;
+    await showWelcomeDialog(context);
   }
 
   Future<void> _bootstrapInstantFirstCapture() async {
     await _loadSessionState();
 
+    // Show first-run onboarding if it hasn't been shown yet.
+    await _maybeShowOnboarding();
+
     final pos = await _mapController.getCurrentPosition(context);
     if (pos != null) {
+      // Resolve corridor entry before moving camera so we can override the
+      // camera target when the user is far from the active trail.
+      _resolveCorridorEntry(pos.latitude, pos.longitude);
+
+      final farFromCorridor =
+          _corridorEntryDistanceMeters >
+          _modeConfig.maxRecommendationDistanceMeters;
       await _refreshMapForCoordinates(
         pos.latitude,
         pos.longitude,
-        moveCamera: true,
+        moveCamera: !farFromCorridor,
         accuracy: pos.accuracy,
       );
+
+      if (farFromCorridor) {
+        unawaited(_maybeFlyToCorridorOverview(pos.latitude, pos.longitude));
+      }
+
       unawaited(_startTracking());
     }
 
     await _syncRecommendedTileGlow(currentLat: _lastLat, currentLng: _lastLng);
+
+    // Prefetch lightweight leaderboard teaser for Guided HUD pill.
+    unawaited(_prefetchLeaderboardTeaser());
   }
 
   Future<void> _startSessionSilently({
@@ -393,7 +1072,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     // Start session in provider (single source of truth for counters).
     final notifier = ref.read(gameStateProvider.notifier);
     if (incrementSessionCount) {
-      notifier.startSession(lastLat: _lastLat, lastLng: _lastLng);
+      notifier.startSession(
+        lastLat: _lastLat,
+        lastLng: _lastLng,
+        activityMode: _selectedActivityMode,
+      );
     } else {
       notifier.startSessionSilently(lastLat: _lastLat, lastLng: _lastLng);
     }
@@ -417,9 +1100,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   }
 
   void _refreshFirstSessionGuidanceState() {
-    ref.read(gameStateProvider.notifier).refreshFirstSessionGuidance(
-      hasCapturedAnyTile: _captureService.capturedHexes.isNotEmpty,
-    );
+    ref
+        .read(gameStateProvider.notifier)
+        .refreshFirstSessionGuidance(
+          hasCapturedAnyTile: _captureService.capturedHexes.isNotEmpty,
+        );
   }
 
   bool get _isGuidedFirstCaptureMode =>
@@ -430,16 +1115,33 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     await HapticFeedback.mediumImpact();
     await _startSessionSilently(incrementSessionCount: true);
+    if (_showLaunchBanner) {
+      _showLaunchBanner = false;
+      // launchEntryMode is now driven by _isFarFromCorridor in the refresh
+      // loop — do NOT force it off here so muting and corridor constraint
+      // persist until the user is physically near the corridor.
+    }
     if (!_tracking) {
       unawaited(_startTracking());
     }
     if (!mounted) return;
 
+    await _syncRecommendedTileGlow(currentLat: _lastLat, currentLng: _lastLng);
+    final hasTarget = _recommendedTileHex != null;
     _showCaptureFeedback(
-      'Session live - Move to the glowing tile',
+      hasTarget
+          ? (_isFarFromCorridor
+                ? (_isRiding
+                      ? 'Session live — Ride to ${LaunchCorridor.activeTrailName}'
+                      : 'Session live - Head to ${LaunchCorridor.activeTrailName}')
+                : (_isRiding
+                      ? 'Session live — Ride to the glowing tile'
+                      : 'Session live - Move to the glowing tile'))
+          : (_isRiding
+                ? 'Session live — Captures happen as you ride'
+                : 'Session live - Auto-capture on movement'),
       duration: const Duration(milliseconds: 1900),
     );
-    await _syncRecommendedTileGlow(currentLat: _lastLat, currentLng: _lastLng);
   }
 
   void _showCaptureFeedback(
@@ -449,7 +1151,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   }) {
     _captureFeedbackTimer?.cancel();
     if (!mounted) return;
-    ref.read(gameStateProvider.notifier).showCaptureFeedback(text, success: success);
+    ref
+        .read(gameStateProvider.notifier)
+        .showCaptureFeedback(text, success: success);
     _captureFeedbackTimer = Timer(duration, () {
       if (!mounted) return;
       ref.read(gameStateProvider.notifier).clearCaptureFeedback();
@@ -516,11 +1220,28 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     final previousHex = _currentCell?.toRadixString(16).toLowerCase();
 
+    // Resolve corridor entry BEFORE camera decisions so _isFarFromCorridor
+    // reflects this position, not the previous one.
+    if (_corridorEntryHex != null) {
+      _resolveCorridorEntry(lat, lng);
+      if (_showLaunchBanner &&
+          _corridorEntryDistanceMeters <=
+              _modeConfig.maxRecommendationDistanceMeters) {
+        setState(() => _showLaunchBanner = false);
+      }
+    }
+
+    // Sync the launch-entry visual mode so captured tiles are muted/normal.
+    // Use distance-based check so muting persists even after session start.
+    _mapRenderService.launchEntryMode = _isFarFromCorridor;
+
     final result = await _mapController.refreshMapForCoordinates(
       lat,
       lng,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref
+          .read(gameStateProvider)
+          .showPreviewEnemyTiles,
     );
     _applyRefreshResult(result, currentLat: lat, currentLng: lng);
 
@@ -532,24 +1253,31 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       accuracy: accuracy,
     );
 
-    final cameraUpdate = _mapController.buildCameraUpdate(
-      lat,
-      lng,
-      moveCamera: moveCamera,
-    );
-    if (cameraUpdate != null) {
-      _map?.flyTo(
-        mb.CameraOptions(
-          center: mb.Point(
-            coordinates: mb.Position(
-              cameraUpdate.longitude,
-              cameraUpdate.latitude,
-            ),
-          ),
-          zoom: cameraUpdate.zoom,
-        ),
-        mb.MapAnimationOptions(duration: cameraUpdate.durationMs),
+    // When far from the active corridor, the corridor-overview camera is
+    // the visual guide — skip the user-centered camera so the overview
+    // framing is preserved until the user is close enough.
+    if (!_isFarFromCorridor) {
+      final cameraUpdate = _mapController.buildCameraUpdate(
+        lat,
+        lng,
+        moveCamera: moveCamera,
+        zoom: _modeConfig.defaultCameraZoom,
       );
+      if (cameraUpdate != null) {
+        _map?.flyTo(
+          mb.CameraOptions(
+            center: mb.Point(
+              coordinates: mb.Position(
+                cameraUpdate.longitude,
+                cameraUpdate.latitude,
+              ),
+            ),
+            zoom: cameraUpdate.zoom,
+            pitch: 45,
+          ),
+          mb.MapAnimationOptions(duration: cameraUpdate.durationMs),
+        );
+      }
     }
 
     _nearbyRefreshTimer ??= _mapController.startPeriodicRefresh(
@@ -591,17 +1319,19 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     final enteredAt = _enteredPendingTileAt;
     if (enteredAt == null ||
-        now.difference(enteredAt) < _autoCaptureDwellTime) {
+        now.difference(enteredAt) < _modeConfig.autoCaptureDwellTime) {
       return;
     }
 
     if (_lastSessionCaptureAttemptHex == currentHex) return;
     if (_lastAutoCaptureAttemptAt != null &&
-        now.difference(_lastAutoCaptureAttemptAt!) < _autoCaptureDebounce) {
+        now.difference(_lastAutoCaptureAttemptAt!) <
+            _modeConfig.autoCaptureDebounce) {
       return;
     }
     final recent = _recentAutoCaptureByHex[currentHex];
-    if (recent != null && now.difference(recent) < _autoCaptureTileCooldown) {
+    if (recent != null &&
+        now.difference(recent) < _modeConfig.autoCaptureTileCooldown) {
       return;
     }
 
@@ -621,7 +1351,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       accuracy: accuracy,
       userId: _mapController.currentUserId,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref
+          .read(gameStateProvider)
+          .showPreviewEnemyTiles,
     );
 
     final result = flowResult.captureAttempt;
@@ -763,11 +1495,50 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  String? _streakDirectionHint() {
+  /// Direction from the player to a specific hex (used for glow-aligned copy).
+  ///
+  /// If the hex is the current recommended target and a snapped guidance
+  /// point exists, the direction is calculated toward the trail polyline
+  /// point rather than the raw hex centroid.
+  String? _directionToHex(String targetHex) {
     final currentLat = _lastLat;
     final currentLng = _lastLng;
     if (currentLat == null || currentLng == null) return null;
 
+    try {
+      // Prefer the snapped guidance point for the recommended hex.
+      final ({double lat, double lng}) target;
+      if (targetHex == _recommendedTileHex &&
+          _recommendedGuidancePoint != null) {
+        target = _recommendedGuidancePoint!;
+      } else {
+        final cell = BigInt.parse(targetHex, radix: 16);
+        final c = _mapRenderService.cellCentroid(cell, targetHex);
+        target = (lat: c.lat, lng: c.lng);
+      }
+      final dLat = target.lat - currentLat;
+      final dLng = target.lng - currentLng;
+
+      // If the player is essentially on top of the target, don't guess.
+      if (dLat.abs() < 1e-6 && dLng.abs() < 1e-6) return null;
+
+      if (dLat.abs() >= dLng.abs()) {
+        return dLat >= 0 ? 'north' : 'south';
+      }
+      return dLng >= 0 ? 'east' : 'west';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Format a distance in meters as a compact miles string (e.g. "2.3 mi").
+  String _formatDistanceMiles(double meters) {
+    final miles = meters / 1609.344;
+    if (miles < 0.1) return '${(meters).round()} ft';
+    return '${miles.toStringAsFixed(1)} mi';
+  }
+
+  String? _streakDirectionHint() {
     final streak =
         _trailProgress
             .where(
@@ -785,54 +1556,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (streak.isEmpty) return null;
     final hex = streak.first.bestNextTileH3;
     if (hex == null || hex.isEmpty) return null;
-
-    try {
-      final lower = hex.toLowerCase();
-      final cell = BigInt.parse(lower, radix: 16);
-      final centroid = _mapRenderService.cellCentroid(cell, lower);
-      final dLat = centroid.lat - currentLat;
-      final dLng = centroid.lng - currentLng;
-
-      if (dLat.abs() >= dLng.abs()) {
-        return dLat >= 0 ? 'north' : 'south';
-      }
-      return dLng >= 0 ? 'east' : 'west';
-    } catch (_) {
-      return null;
-    }
+    return _directionToHex(hex.toLowerCase());
   }
 
   ({bool pressure, bool canFlip, bool atRiskDefense, bool strengthensLead})
   _sectionSignalsForHex(String hexLower) {
-    var pressure = false;
-    var canFlip = false;
-    var atRiskDefense = false;
-    var strengthensLead = false;
-
-    for (final section in _sectionProgress) {
-      if (section.bestNextTileH3?.toLowerCase() != hexLower) continue;
-
-      if (section.controlState == SectionControlState.contested ||
-          section.controlState == SectionControlState.rival) {
-        pressure = true;
-      }
-      if (section.canFlipWithNextCapture || section.tilesToTakeControl <= 1) {
-        canFlip = true;
-      }
-      if (section.isAtRisk && section.controlState == SectionControlState.you) {
-        atRiskDefense = true;
-      }
-      if (section.controlState == SectionControlState.you ||
-          section.controlState == SectionControlState.unclaimed) {
-        strengthensLead = true;
-      }
-    }
-
-    return (
-      pressure: pressure,
-      canFlip: canFlip,
-      atRiskDefense: atRiskDefense,
-      strengthensLead: strengthensLead,
+    return RecommendationScoringService.sectionSignalsForHex(
+      hexLower,
+      _sectionProgress,
     );
   }
 
@@ -853,53 +1584,24 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     double distance,
     Set<String> streakTargetHexes,
   ) {
-    final hexLower = tile.h3Index.toLowerCase();
-    final signals = _sectionSignalsForHex(hexLower);
-
-    var score = _recommendScoreBase;
-    final streakBonus = streakTargetHexes.contains(hexLower)
-        ? _recommendStreakBonus
-        : 0.0;
-    final sectionPressureBonus = signals.pressure
-        ? _recommendSectionPressureBonus
-        : 0.0;
-    final sectionFlipBonus = signals.canFlip ? _recommendSectionFlipBonus : 0.0;
-    final atRiskDefenseBonus = signals.atRiskDefense
-        ? _recommendAtRiskDefenseBonus
-        : 0.0;
-    final strengthenLeadBonus = signals.strengthensLead
-        ? _recommendStrengthenLeadBonus
-        : 0.0;
-    final ownershipBonus = switch (tile.ownership) {
-      TileOwnership.neutral => _recommendNeutralBonus,
-      TileOwnership.enemy => _recommendRivalBonus,
-      TileOwnership.mine => 0.0,
-    };
-
-    final normalized = (distance / MapController.maxCaptureDistanceMeters)
-        .clamp(0.0, 1.0);
-    final distancePenalty = normalized * _recommendDistancePenaltyMax;
-    score -= distancePenalty;
-
-    score += streakBonus;
-    score += sectionPressureBonus;
-    score += sectionFlipBonus;
-    score += atRiskDefenseBonus;
-    score += strengthenLeadBonus;
-    score += ownershipBonus;
-
-    score = score.clamp(0, _recommendScoreMax).toDouble();
+    final result = RecommendationScoringService.scoreCandidate(
+      tile,
+      distance,
+      streakTargetHexes,
+      _sectionProgress,
+      maxCaptureDistanceMeters: _modeConfig.maxRecommendationDistanceMeters,
+    );
     return (
-      score: score,
-      distance: distance,
-      distancePenalty: distancePenalty,
-      streakBonus: streakBonus,
-      sectionPressureBonus: sectionPressureBonus,
-      sectionFlipBonus: sectionFlipBonus,
-      atRiskDefenseBonus: atRiskDefenseBonus,
-      strengthenLeadBonus: strengthenLeadBonus,
-      ownershipBonus: ownershipBonus,
-      tile: tile,
+      score: result.score,
+      distance: result.distance,
+      distancePenalty: result.distancePenalty,
+      streakBonus: result.streakBonusApplied,
+      sectionPressureBonus: result.sectionPressureBonusApplied,
+      sectionFlipBonus: result.sectionFlipBonusApplied,
+      atRiskDefenseBonus: result.atRiskDefenseBonusApplied,
+      strengthenLeadBonus: result.strengthenLeadBonusApplied,
+      ownershipBonus: result.ownershipBonusApplied,
+      tile: result.tile,
     );
   }
 
@@ -920,13 +1622,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   _rankRecommendationCandidates({double? lat, double? lng}) {
     final withDistance = _visibleTiles
         .where(_isTileCapturable)
+        .where((tile) => ValidTrailHexes.isValid(tile.h3Index.toLowerCase()))
         .map(
           (tile) =>
               (tile: tile, d: _distanceToTileMeters(tile, lat: lat, lng: lng)),
         )
         .where((entry) => entry.d != null)
         .map((entry) => (tile: entry.tile, d: entry.d!))
-        .where((entry) => entry.d <= MapController.maxCaptureDistanceMeters)
+        .where(
+          (entry) => entry.d <= _modeConfig.maxRecommendationDistanceMeters,
+        )
         .toList(growable: false);
     if (withDistance.isEmpty) return const [];
 
@@ -964,8 +1669,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   GameTile? _bestRecommendedCapturableTile({double? lat, double? lng}) {
     final guidedMode = _resolveHudPersonality() == HudPersonality.guided;
     // Allow recommendation in Guided mode even pre-session so glow and copy stay in sync.
-    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) return null;
-    if (ref.read(gameStateProvider).selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode) {
+    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode)
+      return null;
+    if (ref.read(gameStateProvider).selectedHex != null &&
+        !_isGuidedFirstCaptureMode &&
+        !guidedMode) {
       return null;
     }
 
@@ -982,41 +1690,48 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final ranked = _rankRecommendationCandidates(lat: lat, lng: lng);
     if (ranked.isEmpty) return null;
 
-    var chosen = ranked.first;
-
-    final currentHex = _recommendedTileHex;
-    if (currentHex != null) {
-      final currentCandidates = ranked
-          .where((item) => item.tile.h3Index.toLowerCase() == currentHex)
-          .toList(growable: false);
-      final current = currentCandidates.isEmpty
-          ? null
-          : currentCandidates.first;
-
-      if (current != null &&
-          chosen.tile.h3Index.toLowerCase() != currentHex &&
-          chosen.score < current.score + _recommendSwitchMargin) {
-        chosen = current;
-      }
-
-      if (current != null &&
-          chosen.tile.h3Index.toLowerCase() != currentHex &&
-          (chosen.score - current.score).abs() <= _recommendTieHoldMargin) {
-        chosen = current;
-      }
-    }
-
-    return chosen.tile;
+    return RecommendationScoringService.applyHysteresis(
+      rankedCandidates: ranked
+          .map((item) => (score: item.score, tile: item.tile))
+          .toList(growable: false),
+      currentRecommendedHex: _recommendedTileHex,
+    );
   }
+
+  /// Whether the user is still outside the corridor-entry zone.
+  ///
+  /// This is a distance-based check, NOT tied to `_showLaunchBanner` (which
+  /// is a UI element dismissed on session start).  The corridor recommendation
+  /// constraint must remain active regardless of banner/session state until
+  /// the user is physically close enough to the corridor.
+  bool get _isFarFromCorridor =>
+      _corridorEntryHex != null &&
+      _corridorEntryDistanceMeters >
+          _modeConfig.maxRecommendationDistanceMeters;
 
   String? _guidedPriorityTargetHex({double? lat, double? lng}) {
     final guidedMode = _resolveHudPersonality() == HudPersonality.guided;
     // Allow target resolution in Guided mode pre-session so copy and glow align.
-    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) return null;
-    return _bestRecommendedCapturableTile(
+    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode)
+      return null;
+
+    // When the user is far from the active corridor, constrain
+    // recommendations to the corridor entry hex — do NOT fall through to
+    // normal local tile recommendations.  This holds even after session start.
+    if (_isFarFromCorridor && guidedMode && _corridorEntryHex != null) {
+      return _corridorEntryHex;
+    }
+
+    final reco = _bestRecommendedCapturableTile(
       lat: lat,
       lng: lng,
     )?.h3Index.toLowerCase();
+    if (reco != null) return reco;
+
+    // Fallback: when no nearby capturable tiles, guide the user toward the
+    // nearest hex on the active launch corridor.
+    if (guidedMode && _corridorEntryHex != null) return _corridorEntryHex;
+    return null;
   }
 
   Future<void> _clearRecommendedTileGlow() async {
@@ -1024,6 +1739,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     _recommendedTilePulseTimer?.cancel();
     _recommendedTilePulseTimer = null;
     _recommendedTileHex = null;
+    _recommendedGuidancePoint = null;
     _recommendedPulseOn = false;
     await _mapRenderService.clearRecommendedHex();
   }
@@ -1057,12 +1773,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final hudPersonality = _resolveHudPersonality();
     final guidedMode = hudPersonality == HudPersonality.guided;
     final proMode = hudPersonality == HudPersonality.pro;
-    final showInPro = ref.read(gameStateProvider).currentObjective.actionLabel == 'Capture';
+    final showInPro =
+        ref.read(gameStateProvider).currentObjective.actionLabel == 'Capture';
 
     // Allow glow pre-session in Guided mode so it matches the copy that mentions it.
     if ((!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) ||
         (proMode && !showInPro && !_isGuidedFirstCaptureMode) ||
-        (ref.read(gameStateProvider).selectedHex != null && !_isGuidedFirstCaptureMode && !guidedMode)) {
+        (ref.read(gameStateProvider).selectedHex != null &&
+            !_isGuidedFirstCaptureMode &&
+            !guidedMode)) {
       if (syncToken != _recommendedGlowSyncToken) return;
       await _clearRecommendedTileGlow();
       return;
@@ -1079,7 +1798,20 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
 
     _recommendedTileHex = targetHex;
+    _recommendedGuidancePoint = ValidTrailHexes.guidancePointForHex(targetHex);
+    if (kDebugMode) {
+      final dist = ValidTrailHexes.debugDistanceForHex(targetHex);
+      debugPrint(
+        '[HexReco] target=$targetHex '
+        'valid=${ValidTrailHexes.isValid(targetHex)} '
+        'polylineDist=${dist?.toStringAsFixed(0)}m '
+        'guidancePt=$_recommendedGuidancePoint',
+      );
+    }
     if (_map == null) return;
+
+    // The bounds camera now frames both user and corridor entry on-screen,
+    // so draw the glow even when far — it becomes the strongest visual anchor.
 
     _ensureRecommendedPulseTimer();
 
@@ -1099,7 +1831,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         _map?.flyTo(
           mb.CameraOptions(
             center: mb.Point(coordinates: mb.Position(center.lng, center.lat)),
-            zoom: 16.1,
+            zoom: _modeConfig.firstCaptureCameraZoom,
+            pitch: 45,
           ),
           mb.MapAnimationOptions(duration: 900),
         );
@@ -1167,57 +1900,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Future<void> _evaluateMilestones() async {
-    final burke = _trailProgress
-        .where((p) => p.trail.id == 'burke_gilman')
-        .toList();
-    final burkeProgress = burke.isEmpty ? null : burke.first;
-
-    final checks = <({String id, String title, bool unlockedNow})>[
-      (
-        id: 'first_session_start',
-        title: '🎬 First session started',
-        unlockedNow: _sessionsStartedCount > 0,
-      ),
-      (
-        id: 'first_tile',
-        title: '🏁 First tile captured',
-        unlockedNow: _captureService.capturedHexes.isNotEmpty,
-      ),
-      (
-        id: 'streak_3',
-        title: '🔥 3-tile streak reached',
-        unlockedNow: _trailProgress.any((p) => p.longestOwnedSegmentTiles >= 3),
-      ),
-      (
-        id: 'streak_5',
-        title: '🔥 5-tile streak reached',
-        unlockedNow: _trailProgress.any((p) => p.longestOwnedSegmentTiles >= 5),
-      ),
-      (
-        id: 'streak_10',
-        title: '⚡ 10-tile streak reached',
-        unlockedNow: _trailProgress.any(
-          (p) => p.longestOwnedSegmentTiles >= 10,
-        ),
-      ),
-      (
-        id: 'burke_25',
-        title: '🗺️ Burke-Gilman 25% complete',
-        unlockedNow: (burkeProgress?.completionPercent ?? 0) >= 25,
-      ),
-      (
-        id: 'first_trail_complete',
-        title: '🏆 Completed first trail',
-        unlockedNow: _trailProgress.any((p) => p.isComplete),
-      ),
-      (
-        id: 'first_section_contested',
-        title: '⚔️ First section contested',
-        unlockedNow: _sectionProgress.any(
-          (s) => s.controlState == SectionControlState.contested,
-        ),
-      ),
-    ];
+    final checks = MilestoneEvaluator.evaluateAll(
+      sessionsStartedCount: _sessionsStartedCount,
+      hasCapturedTiles: _captureService.capturedHexes.isNotEmpty,
+      trailProgress: _trailProgress,
+      sectionProgress: _sectionProgress,
+    );
 
     final unlockedChecks = checks
         .where((check) => check.unlockedNow)
@@ -1356,47 +2044,49 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     );
   }
 
-  int _longestProtectionStreak(List<MapEvent> events) {
-    final perHex = <String, int>{};
-    var best = 0;
-
-    for (final event in events) {
-      if (event.type != MapEventType.protectionRefreshed) continue;
-      final hex = event.metadata['hex'];
-      if (hex is! String || hex.isEmpty) continue;
-
-      final next = (perHex[hex] ?? 0) + 1;
-      perHex[hex] = next;
-      if (next > best) best = next;
-    }
-    return best;
+  Future<void> _showLeaderboard() async {
+    final service = TrailLeaderboardService(
+      supabaseClient: _captureService.supabaseClient,
+    );
+    if (!mounted) return;
+    await showTrailLeaderboardSheet(context, service: service);
+    // Refresh teaser after the user closes the sheet (data may have changed).
+    unawaited(_prefetchLeaderboardTeaser());
   }
 
-  Future<void> _showLeaderboard() async {
-    final now = DateTime.now();
-    final weekStart = now.subtract(const Duration(days: 7));
-    final events = _eventLog.events;
+  /// Lightweight background fetch for the leaderboard rank/tile teaser.
+  /// Updates [_leaderboardRank] and [_leaderboardTiles] used by the
+  /// Guided HUD pill without blocking other operations.
+  Future<void> _prefetchLeaderboardTeaser() async {
+    try {
+      final service = TrailLeaderboardService(
+        supabaseClient: _captureService.supabaseClient,
+      );
+      final snapshot = await service.fetchBurkeGilman(topN: 5);
+      if (!mounted || snapshot == null) return;
+      setState(() {
+        _leaderboardRank = snapshot.yourRank;
+        _leaderboardTiles = snapshot.yourTotalTiles;
+      });
+    } catch (_) {
+      // Silently ignore — the teaser pill falls back to generic "Leaderboard".
+    }
+  }
 
-    final capturesThisWeek = events.where((e) {
-      final captureLike =
-          e.type == MapEventType.tileCaptured ||
-          e.type == MapEventType.rivalTakeover;
-      return captureLike && e.timestamp.isAfter(weekStart);
-    }).length;
-
-    final currentlyOwned = _captureService.capturedHexes.length;
-    final longestStreak = _longestProtectionStreak(events);
-
-    if (!mounted) return;
-    await showLeaderboardDialog(
-      context,
-      stats: LocalLeaderboardStats(
-        capturesThisWeek: capturesThisWeek,
-        currentlyOwned: currentlyOwned,
-        longestProtectionStreak: longestStreak,
-        trailProgress: _trailProgress,
-      ),
+  /// Start a periodic 60-second leaderboard teaser refresh.
+  /// Only runs while a session is active so we're not polling when idle.
+  void _startLeaderboardRefreshTimer() {
+    _leaderboardRefreshTimer?.cancel();
+    _leaderboardRefreshTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => unawaited(_prefetchLeaderboardTeaser()),
     );
+  }
+
+  /// Stop the periodic leaderboard refresh (session ended or widget disposed).
+  void _stopLeaderboardRefreshTimer() {
+    _leaderboardRefreshTimer?.cancel();
+    _leaderboardRefreshTimer = null;
   }
 
   String _trailProgressInlineText() {
@@ -1611,7 +2301,23 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   ({String title, String? detail, String cta}) _guidedMovementCopy(
     String targetHex,
   ) {
-    final direction = _streakDirectionHint();
+    // When the target is a corridor entry (user is far from the trail),
+    // show corridor-specific messaging instead of objective-based copy.
+    if (_corridorEntryHex == targetHex &&
+        _corridorEntryDistanceMeters >
+            _modeConfig.maxRecommendationDistanceMeters) {
+      final direction = _directionToHex(targetHex);
+      final dist = _formatDistanceMiles(_corridorEntryDistanceMeters);
+      return (
+        title: direction == null
+            ? '${LaunchCorridor.activeTrailName} is $dist away'
+            : 'Head $direction to ${LaunchCorridor.activeTrailName}',
+        detail: '$dist to the active battlefield',
+        cta: _isRiding ? 'Ride to Trail' : 'Move to Trail',
+      );
+    }
+
+    final direction = _directionToHex(targetHex);
     final signals = _sectionSignalsForHex(targetHex);
     final sectionTarget =
         _sectionProgress
@@ -1637,8 +2343,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final trail = trailTarget.isEmpty ? null : trailTarget.first;
 
     final directionLead = direction == null
-        ? 'Move to the glowing tile'
-        : 'Head $direction';
+        ? (_isRiding ? 'Ride to the glowing tile' : 'Move to the glowing tile')
+        : (_isRiding ? 'Ride $direction' : 'Head $direction');
 
     if (signals.canFlip ||
         (section != null && section.tilesToTakeControl <= 1)) {
@@ -1646,8 +2352,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         title: 'One more tile contests this section',
         detail: direction == null
             ? 'Pressure ${section?.section.name ?? 'the rival section'} on the glowing tile'
-            : 'Move $direction to pressure ${section?.section.name ?? 'the rival section'}',
-        cta: 'Move to Target',
+            : (_isRiding
+                  ? 'Ride $direction to pressure ${section?.section.name ?? 'the rival section'}'
+                  : 'Move $direction to pressure ${section?.section.name ?? 'the rival section'}'),
+        cta: _isRiding ? 'Ride to Target' : 'Move to Target',
       );
     }
 
@@ -1656,8 +2364,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         title: 'Pressure the rival section',
         detail: direction == null
             ? '${section.section.name} is the next tactical push'
-            : 'Move $direction to pressure ${section.section.name}',
-        cta: 'Move to Target',
+            : (_isRiding
+                  ? 'Ride $direction to pressure ${section.section.name}'
+                  : 'Move $direction to pressure ${section.section.name}'),
+        cta: _isRiding ? 'Ride to Target' : 'Move to Target',
       );
     }
 
@@ -1665,11 +2375,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         trail.bestNextTileReason == TrailNextTileReason.extendStreak) {
       return (
         title: direction == null
-            ? 'Move to the glowing tile'
-            : 'Head $direction to extend your streak',
+            ? (_isRiding
+                  ? 'Ride to the glowing tile'
+                  : 'Move to the glowing tile')
+            : (_isRiding
+                  ? 'Ride $direction to extend your streak'
+                  : 'Head $direction to extend your streak'),
         detail:
             'Streak grows to ${trail.projectedOwnedSegmentTiles} on ${trail.trail.name}',
-        cta: 'Move to Target',
+        cta: _isRiding ? 'Ride to Target' : 'Move to Target',
       );
     }
 
@@ -1680,372 +2394,332 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         detail: direction == null
             ? 'The glowing tile reconnects your route'
             : '$directionLead to reconnect your route',
-        cta: 'Move to Target',
+        cta: _isRiding ? 'Ride to Target' : 'Move to Target',
       );
     }
 
     return (
       title: direction == null
-          ? 'Move to the glowing tile'
+          ? (_isRiding
+                ? 'Ride to the glowing tile'
+                : 'Move to the glowing tile')
           : '$directionLead to target',
-      detail: ref.read(gameStateProvider).currentObjective.detail ?? _nextObjectiveDetailText(),
-      cta: 'Move to Target',
+      detail:
+          ref.read(gameStateProvider).currentObjective.detail ??
+          _nextObjectiveDetailText(),
+      cta: _isRiding ? 'Ride to Target' : 'Move to Target',
     );
   }
 
-  Widget _buildGuidedBottomPanel({required bool compactHud}) {
-    final guidedTargetHex = _guidedPriorityTargetHex();
-    final targetCopy = guidedTargetHex == null
-        ? null
-        : _guidedMovementCopy(guidedTargetHex);
-    final onRecommendedTile =
-        guidedTargetHex != null &&
-        _currentTile.isNotEmpty &&
-        guidedTargetHex == _currentTile.toLowerCase();
-    final direction = _streakDirectionHint();
-    final isFirstCapture = _isGuidedFirstCaptureMode;
-    final preSession = !_sessionActive;
-    final hasMomentumTarget =
-        _sessionActive &&
-        guidedTargetHex != null &&
-        !onRecommendedTile &&
-        !isFirstCapture;
-    final currentOwnedByMe =
-        _sessionActive &&
-        _currentGameTile.ownership == TileOwnership.mine &&
-        !isFirstCapture;
+  bool get _isCorridorEntryTarget =>
+      _isFarFromCorridor &&
+      _corridorEntryHex != null &&
+      _corridorEntryHex == _guidedPriorityTargetHex();
+
+  GuidedCtaCopy _guidedCtaCopyForBottomPanel({
+    required bool preSession,
+    required bool isFirstCapture,
+    required bool hasMomentumTarget,
+    required bool currentOwnedByMe,
+    required String? direction,
+    required ({String title, String? detail, String cta})? targetCopy,
+    required String? guidedTargetHex,
+  }) {
+    final corridorEntry = _isCorridorEntryTarget;
+    final riding = _isRiding;
     final title = preSession
-        ? '▶ Start session to begin movement capture'
+        ? (corridorEntry
+              ? '▶ Tap to start your session'
+              : '▶ Start session to begin movement capture')
         : isFirstCapture
-        ? (direction == null
-              ? '🎯 Session live - move to the glowing tile'
-              : '🎯 Session live - move $direction to the glow')
+        ? (corridorEntry
+              ? (riding
+                    ? '🎯 Session live — ride to the trail'
+                    : '🎯 Session live — move to the trail')
+              : direction == null
+              ? (riding
+                    ? '🎯 Session live — ride to the glowing tile'
+                    : '🎯 Session live — move to the glowing tile')
+              : (riding
+                    ? '🎯 Session live — ride $direction to the glow'
+                    : '🎯 Session live — move $direction to the glow'))
         : hasMomentumTarget
         ? targetCopy!.title
         : ref.read(gameStateProvider).currentObjective.title;
     final detail = preSession
-        ? 'Auto-capture activates while you move through target tiles'
+        ? (corridorEntry
+              ? 'Auto-capture activates near the trail'
+              : (riding
+                    ? 'Auto-capture activates as you ride through target tiles'
+                    : 'Auto-capture activates while you move through target tiles'))
         : isFirstCapture
-        ? 'Tracking is active. Keep moving to trigger your first capture'
+        ? (riding
+              ? 'Tracking is active. Keep riding to trigger your first capture'
+              : 'Tracking is active. Keep moving to trigger your first capture')
         : hasMomentumTarget
         ? targetCopy!.detail
         : (currentOwnedByMe
               ? (targetCopy?.detail ??
-                    'Move to the highlighted target to keep momentum')
+                    (riding
+                        ? 'Ride to the highlighted target to keep momentum'
+                        : 'Move to the highlighted target to keep momentum'))
               : ref.read(gameStateProvider).currentObjective.detail);
     final buttonLabel = preSession
         ? 'Start Session'
         : isFirstCapture
-        ? 'Move to Glow'
+        ? (corridorEntry
+              ? (riding ? 'Ride to Trail' : 'Move to Trail')
+              : (riding ? 'Ride to Glow' : 'Move to Glow'))
         : hasMomentumTarget
         ? targetCopy!.cta
         : (currentOwnedByMe
-              ? (targetCopy?.cta ?? 'Move to Target')
-              : 'Keep Moving');
-
-    return FrostedOverlayCard(
-      emphasized: isFirstCapture || _capturePulseActive,
-      padding: EdgeInsets.symmetric(
-        horizontal: 12,
-        vertical: compactHud ? 8 : 10,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: GameUiText.body(
-              color: GameUiTokens.textHi,
-              size: 13,
-              weight: FontWeight.w700,
-            ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          if (detail != null) ...[
-            const SizedBox(height: 2),
-            Text(
-              detail,
-              style: GameUiText.meta(color: GameUiTokens.textMid, size: 11),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: preSession
-                  ? () async {
-                      await _startGuidedSessionFromCta();
-                    }
-                  : _currentTile.isEmpty
-                  ? null
-                  : () async {
-                      final shouldMoveFirst =
-                          isFirstCapture || hasMomentumTarget;
-                      if (shouldMoveFirst) {
-                        final hint = direction == null
-                            ? 'Move to the glowing tile'
-                            : 'Move $direction to the glowing tile';
-                        await HapticFeedback.selectionClick();
-                        _showCaptureFeedback(hint);
-                        return;
-                      }
-
-                      await HapticFeedback.selectionClick();
-                      _showCaptureFeedback(
-                        currentOwnedByMe
-                            ? 'Session live - Auto-capture on movement'
-                            : 'Tracking active - Keep moving',
-                      );
-                    },
-              style: FilledButton.styleFrom(
-                backgroundColor: GameColors.neonGreen,
-                foregroundColor: Colors.black,
-              ),
-              child: Text(buttonLabel),
-            ),
-          ),
-        ],
-      ),
+              ? (targetCopy?.cta ??
+                    (riding ? 'Ride to Target' : 'Move to Target'))
+              : (riding ? 'Keep Riding' : 'Keep Moving'));
+    return GuidedCtaCopy(
+      title: title,
+      detail: detail,
+      buttonLabel: buttonLabel,
     );
   }
 
-  Widget _buildGuidedStickyCtaBar({required bool compactHud}) {
-    final guidedTargetHex = _guidedPriorityTargetHex();
-    final targetCopy = guidedTargetHex == null
-        ? null
-        : _guidedMovementCopy(guidedTargetHex);
-    final onRecommendedTile =
-        guidedTargetHex != null &&
-        _currentTile.isNotEmpty &&
-        guidedTargetHex == _currentTile.toLowerCase();
-    final direction = _streakDirectionHint();
-    final isFirstCapture = _isGuidedFirstCaptureMode;
-    final preSession = !_sessionActive;
-    final hasMomentumTarget =
-        _sessionActive &&
-        guidedTargetHex != null &&
-        !onRecommendedTile &&
-        !isFirstCapture;
-    final currentOwnedByMe =
-        _sessionActive &&
-        _currentGameTile.ownership == TileOwnership.mine &&
-        !isFirstCapture;
+  GuidedCtaCopy _guidedCtaCopyForStickyBar({
+    required bool preSession,
+    required bool isFirstCapture,
+    required bool hasMomentumTarget,
+    required bool currentOwnedByMe,
+    required String? direction,
+    required ({String title, String? detail, String cta})? targetCopy,
+    required String? guidedTargetHex,
+  }) {
+    final corridorEntry = _isCorridorEntryTarget;
+    final riding = _isRiding;
     final message = preSession
-        ? (guidedTargetHex != null
-            ? '▶ Start session, then move to the glowing tile'
-            : '▶ Start session to begin capturing tiles')
+        ? (corridorEntry
+              ? '▶ Tap Start to begin capturing'
+              : guidedTargetHex != null
+              ? (riding
+                    ? '▶ Start session, then ride to the glowing tile'
+                    : '▶ Start session, then move to the glowing tile')
+              : '▶ Start session to begin capturing tiles')
         : isFirstCapture
-        ? (direction == null
-              ? '🎯 Session live - move to the glowing tile'
-              : '🎯 Session live - move $direction to the glow')
+        ? (corridorEntry
+              ? (riding
+                    ? '🎯 Session live — ride to the trail'
+                    : '🎯 Session live — move to the trail')
+              : direction == null
+              ? (riding
+                    ? '🎯 Session live — ride to the glowing tile'
+                    : '🎯 Session live — move to the glowing tile')
+              : (riding
+                    ? '🎯 Session live — ride $direction to the glow'
+                    : '🎯 Session live — move $direction to the glow'))
         : hasMomentumTarget
         ? targetCopy!.title
         : ref.read(gameStateProvider).currentObjective.title;
     final buttonLabel = preSession
         ? 'Start'
         : isFirstCapture
-        ? 'Move'
+        ? (riding ? 'Ride' : 'Move')
         : hasMomentumTarget
         ? targetCopy!.cta
-        : (currentOwnedByMe ? (targetCopy?.cta ?? 'Move') : 'Live');
+        : (currentOwnedByMe
+              ? (targetCopy?.cta ?? (riding ? 'Ride' : 'Move'))
+              : 'Live');
+    return GuidedCtaCopy(title: message, buttonLabel: buttonLabel);
+  }
 
-    return FrostedOverlayCard(
-      emphasized: isFirstCapture || _capturePulseActive,
-      padding: EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: compactHud ? 6 : 8,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              message,
-              style: GameUiText.body(
-                color: GameUiTokens.textHi,
-                size: 12,
-                weight: FontWeight.w700,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 10),
-          FilledButton(
-            onPressed: preSession
-                ? () async {
-                    await _startGuidedSessionFromCta();
-                  }
-                : _currentTile.isEmpty
-                ? null
-                : () async {
-                    final shouldMoveFirst = isFirstCapture || hasMomentumTarget;
-                    if (shouldMoveFirst) {
-                      final hint = direction == null
-                          ? 'Move to the glowing tile'
-                          : 'Move $direction to the glowing tile';
-                      await HapticFeedback.selectionClick();
-                      _showCaptureFeedback(hint);
-                      return;
-                    }
+  /// Shared computed state for both CTA variants.
+  ({
+    bool preSession,
+    bool isFirstCapture,
+    bool hasMomentumTarget,
+    bool currentOwnedByMe,
+    String? direction,
+    ({String title, String? detail, String cta})? targetCopy,
+    String? guidedTargetHex,
+  })
+  _guidedCtaState() {
+    final guidedTargetHex = _guidedPriorityTargetHex();
+    final targetCopy = guidedTargetHex == null
+        ? null
+        : _guidedMovementCopy(guidedTargetHex);
+    final onRecommendedTile =
+        guidedTargetHex != null &&
+        _currentTile.isNotEmpty &&
+        guidedTargetHex == _currentTile.toLowerCase();
+    final direction = guidedTargetHex == null
+        ? null
+        : _directionToHex(guidedTargetHex);
+    final isFirstCapture = _isGuidedFirstCaptureMode;
+    final preSession = !_sessionActive;
+    final hasMomentumTarget =
+        _sessionActive &&
+        guidedTargetHex != null &&
+        !onRecommendedTile &&
+        !isFirstCapture;
+    final currentOwnedByMe =
+        _sessionActive &&
+        _currentGameTile.ownership == TileOwnership.mine &&
+        !isFirstCapture;
+    return (
+      preSession: preSession,
+      isFirstCapture: isFirstCapture,
+      hasMomentumTarget: hasMomentumTarget,
+      currentOwnedByMe: currentOwnedByMe,
+      direction: direction,
+      targetCopy: targetCopy,
+      guidedTargetHex: guidedTargetHex,
+    );
+  }
 
-                    await HapticFeedback.selectionClick();
-                    _showCaptureFeedback(
-                      currentOwnedByMe
-                          ? 'Session live - Auto-capture on movement'
-                          : 'Tracking active - Keep moving',
-                    );
-                  },
-            style: FilledButton.styleFrom(
-              backgroundColor: GameColors.neonGreen,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            ),
-            child: Text(
-              buttonLabel,
-              style: GameUiText.body(
-                color: Colors.black,
-                weight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
+  VoidCallback? _guidedCtaButtonCallback({
+    required bool preSession,
+    required bool isFirstCapture,
+    required bool hasMomentumTarget,
+    required bool currentOwnedByMe,
+    required String? direction,
+  }) {
+    if (preSession) {
+      return () async {
+        await _startGuidedSessionFromCta();
+      };
+    }
+    if (_currentTile.isEmpty) return null;
+    return () async {
+      final shouldMoveFirst = isFirstCapture || hasMomentumTarget;
+      if (shouldMoveFirst) {
+        final riding = _isRiding;
+        final hint = _isFarFromCorridor
+            ? (riding
+                  ? 'Ride to ${LaunchCorridor.activeTrailName}'
+                  : 'Head to ${LaunchCorridor.activeTrailName}')
+            : direction == null
+            ? (riding ? 'Ride to the glowing tile' : 'Move to the glowing tile')
+            : (riding
+                  ? 'Ride $direction to the glowing tile'
+                  : 'Move $direction to the glowing tile');
+        await HapticFeedback.selectionClick();
+        _showCaptureFeedback(hint);
+        return;
+      }
+
+      await HapticFeedback.selectionClick();
+      _showCaptureFeedback(
+        currentOwnedByMe
+            ? (_isRiding
+                  ? 'Session live — Captures happen as you ride'
+                  : 'Session live - Auto-capture on movement')
+            : (_isRiding
+                  ? 'Tracking active — Keep riding'
+                  : 'Tracking active - Keep moving'),
+      );
+    };
+  }
+
+  Widget _buildGuidedBottomPanel({required bool compactHud}) {
+    final s = _guidedCtaState();
+    final copy = _guidedCtaCopyForBottomPanel(
+      preSession: s.preSession,
+      isFirstCapture: s.isFirstCapture,
+      hasMomentumTarget: s.hasMomentumTarget,
+      currentOwnedByMe: s.currentOwnedByMe,
+      direction: s.direction,
+      targetCopy: s.targetCopy,
+      guidedTargetHex: s.guidedTargetHex,
+    );
+    final callback = _guidedCtaButtonCallback(
+      preSession: s.preSession,
+      isFirstCapture: s.isFirstCapture,
+      hasMomentumTarget: s.hasMomentumTarget,
+      currentOwnedByMe: s.currentOwnedByMe,
+      direction: s.direction,
+    );
+
+    return GuidedCtaPanel(
+      stickyBar: false,
+      compactHud: compactHud,
+      emphasized: s.isFirstCapture || _capturePulseActive,
+      copy: copy,
+      aboveButton: s.preSession ? _buildActivityModeSelector() : null,
+      onActionButton: callback,
+    );
+  }
+
+  Widget _buildActivityModeSelector() {
+    return SegmentedButton<ActivityMode>(
+      segments: const [
+        ButtonSegment(
+          value: ActivityMode.walkRun,
+          label: Text('Walk / Run'),
+          icon: Icon(Icons.directions_walk, size: 16),
+        ),
+        ButtonSegment(
+          value: ActivityMode.ride,
+          label: Text('Ride'),
+          icon: Icon(Icons.directions_bike, size: 16),
+        ),
+      ],
+      selected: {_selectedActivityMode},
+      onSelectionChanged: (selected) {
+        setState(() => _selectedActivityMode = selected.first);
+      },
+      showSelectedIcon: false,
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return GameUiTokens.accentPrimary.withAlpha(40);
+          }
+          return Colors.transparent;
+        }),
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return GameUiTokens.accentPrimary;
+          }
+          return GameUiTokens.textMid;
+        }),
+        side: WidgetStateProperty.all(
+          const BorderSide(color: GameUiTokens.panelBorder, width: 1),
+        ),
+        shape: WidgetStateProperty.all(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+        textStyle: WidgetStateProperty.all(
+          GameUiText.body(size: 12, weight: FontWeight.w700),
+        ),
+        padding: WidgetStateProperty.all(
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        ),
       ),
     );
   }
 
-  String _selectedOwnerLabel(GameTile tile) {
-    return switch (tile.ownership) {
-      TileOwnership.mine => 'You',
-      TileOwnership.neutral => 'Neutral',
-      TileOwnership.enemy => 'Rival',
-    };
-  }
+  Widget _buildGuidedStickyCtaBar({required bool compactHud}) {
+    final s = _guidedCtaState();
+    final copy = _guidedCtaCopyForStickyBar(
+      preSession: s.preSession,
+      isFirstCapture: s.isFirstCapture,
+      hasMomentumTarget: s.hasMomentumTarget,
+      currentOwnedByMe: s.currentOwnedByMe,
+      direction: s.direction,
+      targetCopy: s.targetCopy,
+      guidedTargetHex: s.guidedTargetHex,
+    );
+    final callback = _guidedCtaButtonCallback(
+      preSession: s.preSession,
+      isFirstCapture: s.isFirstCapture,
+      hasMomentumTarget: s.hasMomentumTarget,
+      currentOwnedByMe: s.currentOwnedByMe,
+      direction: s.direction,
+    );
 
-  String _selectedStatusLabel(GameTile tile) {
-    if (tile.ownership == TileOwnership.neutral) return 'Neutral';
-    final until = tile.protectedUntil;
-    if (until == null || !until.isAfter(DateTime.now()))
-      return 'Capturable now';
-    return 'Protected';
-  }
-
-  String _selectedProtectionCountdown(GameTile tile) {
-    final until = tile.protectedUntil;
-    if (until == null || !until.isAfter(DateTime.now())) return '--';
-
-    final remaining = until.difference(DateTime.now());
-    final hours = remaining.inHours;
-    final minutes = remaining.inMinutes.remainder(60);
-    final seconds = remaining.inSeconds.remainder(60);
-    if (hours > 0) {
-      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-    }
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-  }
-
-  String _selectedHelperLine(GameTile tile) {
-    if (tile.ownership == TileOwnership.neutral) return 'Capturable now';
-    final until = tile.protectedUntil;
-    if (until == null || !until.isAfter(DateTime.now())) {
-      return 'Capturable now';
-    }
-
-    if (tile.ownership == TileOwnership.enemy) return 'Cannot be taken yet';
-
-    final remaining = until.difference(DateTime.now());
-    final mins = remaining.inMinutes;
-    final secs = remaining.inSeconds.remainder(60);
-    return 'Protected for ${mins}m ${secs.toString().padLeft(2, '0')}s';
-  }
-
-  Widget _buildSelectedTileInfoCard({
-    required GameTile tile,
-    required bool guidedMode,
-    required bool compactHud,
-  }) {
-    final owner = _selectedOwnerLabel(tile);
-    final status = _selectedStatusLabel(tile);
-    final countdown = _selectedProtectionCountdown(tile);
-    final helper = _selectedHelperLine(tile);
-
-    return FrostedOverlayCard(
-      emphasized: true,
-      borderRadius: const BorderRadius.all(Radius.circular(16)),
-      padding: EdgeInsets.symmetric(
-        horizontal: 12,
-        vertical: guidedMode ? 8 : (compactHud ? 8 : 10),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Selected tile',
-                  style: GameUiText.body(
-                    color: GameUiTokens.textHi,
-                    size: 13,
-                    weight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              InkWell(
-                onTap: _dismissSelection,
-                child: Padding(
-                  padding: EdgeInsets.all(2),
-                  child: Icon(
-                    Icons.close,
-                    color: GameUiTokens.textMid,
-                    size: 18,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 8,
-            runSpacing: 6,
-            children: [
-              HudPill(label: 'Owner', value: owner),
-              HudPill(label: 'Status', value: status),
-            ],
-          ),
-          if (status == 'Protected') ...[
-            const SizedBox(height: 6),
-            Text(
-              'Protection: $countdown',
-              style: GameUiText.meta(color: GameUiTokens.textMid, size: 12),
-            ),
-          ],
-          const SizedBox(height: 6),
-          Text(
-            helper,
-            style: GameUiText.body(
-              color: GameUiTokens.accentPrimary,
-              size: 13,
-              weight: FontWeight.w700,
-            ),
-            maxLines: guidedMode ? 1 : 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          if (!guidedMode) ...[
-            const SizedBox(height: 4),
-            Text(
-              'H3-$h3Resolution:${tile.h3Index}',
-              style: GameUiText.meta(color: GameUiTokens.textLow, size: 10),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ],
-      ),
+    return GuidedCtaPanel(
+      stickyBar: true,
+      compactHud: compactHud,
+      emphasized: s.isFirstCapture || _capturePulseActive,
+      copy: copy,
+      onActionButton: callback,
     );
   }
 
@@ -2129,7 +2803,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  Future<void> _showSessionSummaryDialog() async {
+  Future<void> _showSessionSummaryDialog({
+    ActivityMode mode = ActivityMode.walkRun,
+  }) async {
     final now = DateTime.now();
     final startedAt = _sessionStartedAt;
     final elapsed = startedAt == null
@@ -2138,28 +2814,124 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final minutes = elapsed.inMinutes;
     final seconds = elapsed.inSeconds % 60;
     final distanceKm = _sessionDistanceMeters / 1000.0;
+    final riding = mode == ActivityMode.ride;
 
     if (!mounted) return;
+
+    final distanceText = distanceKm >= 1.0
+        ? '${distanceKm.toStringAsFixed(2)} km'
+        : '${_sessionDistanceMeters.toStringAsFixed(0)} m';
+    final title = riding ? 'RIDE COMPLETE' : 'SESSION COMPLETE';
+    final subtitle = riding
+        ? '$distanceText route · $_sessionTilesCaptured tiles painted'
+        : '$_sessionTilesCaptured tiles captured · $distanceText covered';
+    final timeText = '${minutes}m ${seconds}s';
+
+    // Snapshot trail-section progress for the primary trail.
+    final primaryTrail = _trailProgress.isNotEmpty
+        ? (_trailProgress.toList()
+                ..sort((a, b) => b.ownedTiles.compareTo(a.ownedTiles)))
+              .first
+        : null;
+    final trailSections = primaryTrail != null
+        ? _sectionProgress
+              .where((s) => s.section.trailId == primaryTrail.trail.id)
+              .toList()
+        : <TrailSectionProgress>[];
+
+    // Build stat rows – mode-aware ordering with hero promotion.
+    final stats = riding
+        ? <_SummaryStat>[
+            _SummaryStat(
+              Icons.straighten,
+              'Distance',
+              distanceText,
+              hero: true,
+            ),
+            _SummaryStat(
+              Icons.grid_view_rounded,
+              'Tiles captured',
+              '$_sessionTilesCaptured',
+            ),
+            _SummaryStat(Icons.timer_outlined, 'Time', timeText),
+            if (_sessionTakeovers > 0)
+              _SummaryStat(Icons.swap_horiz, 'Takeovers', '$_sessionTakeovers'),
+            if (_sessionTilesRefreshed > 0)
+              _SummaryStat(
+                Icons.refresh,
+                'Refreshed',
+                '$_sessionTilesRefreshed',
+              ),
+            if (_sessionRivalBlocked > 0)
+              _SummaryStat(
+                Icons.block,
+                'Rival blocked',
+                '$_sessionRivalBlocked',
+              ),
+            if (_sessionMilestones.isNotEmpty)
+              _SummaryStat(
+                Icons.emoji_events,
+                'Milestones',
+                '${_sessionMilestones.length}',
+              ),
+          ]
+        : <_SummaryStat>[
+            _SummaryStat(
+              Icons.grid_view_rounded,
+              'Tiles captured',
+              '$_sessionTilesCaptured',
+              hero: true,
+            ),
+            if (_sessionTakeovers > 0)
+              _SummaryStat(Icons.swap_horiz, 'Takeovers', '$_sessionTakeovers'),
+            if (_sessionTilesRefreshed > 0)
+              _SummaryStat(
+                Icons.refresh,
+                'Protection refreshed',
+                '$_sessionTilesRefreshed',
+              ),
+            if (_sessionRivalBlocked > 0)
+              _SummaryStat(
+                Icons.block,
+                'Rival blocked',
+                '$_sessionRivalBlocked',
+              ),
+            _SummaryStat(Icons.straighten, 'Distance', distanceText),
+            _SummaryStat(Icons.timer_outlined, 'Time', timeText),
+            if (_sessionMilestones.isNotEmpty)
+              _SummaryStat(
+                Icons.emoji_events,
+                'Milestones',
+                '${_sessionMilestones.length}',
+              ),
+          ];
+
     await showDialog<void>(
       context: context,
+      barrierColor: Colors.black54,
       builder: (context) {
-        return AlertDialog(
-          title: const Text('Session Summary'),
-          content: Text(
-            '${_sessionTilesCaptured} tiles captured\n'
-            '${_sessionTilesRefreshed} tile protection refreshed\n'
-            '${_sessionRivalBlocked} rival tiles still protected\n'
-            '${_sessionTakeovers} takeover captures\n'
-            '${_sessionMilestones.length} milestones unlocked this session\n'
-            'Distance: ${distanceKm.toStringAsFixed(2)} km\n'
-            'Time: ${minutes}m ${seconds}s',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
-            ),
-          ],
+        return _AnimatedSessionSummary(
+          riding: riding,
+          title: title,
+          subtitle: subtitle,
+          distanceText: distanceText,
+          timeText: timeText,
+          tilesCaptured: _sessionTilesCaptured,
+          stats: stats,
+          primaryTrail: primaryTrail,
+          trailSections: trailSections,
+          onShare: () {
+            final modeLabel = riding ? 'ride' : 'session';
+            final shareText = riding
+                ? 'Just finished a HexTrail $modeLabel! '
+                      '$distanceText · $_sessionTilesCaptured tiles captured '
+                      '· $timeText'
+                : 'Just finished a HexTrail $modeLabel! '
+                      '$_sessionTilesCaptured tiles captured '
+                      '· $distanceText · $timeText';
+            Share.share(shareText);
+          },
+          onLeaderboard: _showLeaderboard,
         );
       },
     );
@@ -2319,7 +3091,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       accuracy: _lastAccuracy,
       userId: _mapController.currentUserId,
       radiusMeters: _visibleRadiusMeters,
-      includePreviewEnemyTiles: ref.read(gameStateProvider).showPreviewEnemyTiles,
+      includePreviewEnemyTiles: ref
+          .read(gameStateProvider)
+          .showPreviewEnemyTiles,
     );
     final result = flowResult.captureAttempt;
 
@@ -2400,10 +3174,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       final blocked = gs.sessionRivalBlocked;
       final takeovers = gs.sessionTakeovers;
       final distance = gs.sessionDistanceMeters;
+      final mode = gs.sessionActivityMode;
 
       ref.read(gameStateProvider.notifier).stopSession();
+      _selectedActivityMode = ActivityMode.walkRun;
       _pendingAutoCaptureHex = null;
       _enteredPendingTileAt = null;
+      _stopLeaderboardRefreshTimer();
       setState(() {});
 
       await _saveSessionState();
@@ -2419,17 +3196,20 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         },
       );
 
-      await _showSessionSummaryDialog();
+      await _showSessionSummaryDialog(mode: mode);
       _updateCurrentObjective();
       await _clearRecommendedTileGlow();
       return;
     }
 
     // Start session via provider (single source of truth).
-    ref.read(gameStateProvider.notifier).startSession(
-      lastLat: _lastLat,
-      lastLng: _lastLng,
-    );
+    ref
+        .read(gameStateProvider.notifier)
+        .startSession(
+          lastLat: _lastLat,
+          lastLng: _lastLng,
+          activityMode: _selectedActivityMode,
+        );
 
     // Reset auto-capture local state.
     _lastSessionCaptureAttemptHex = null;
@@ -2445,6 +3225,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       (id: 'first_session_start', title: '🎬 First session started'),
     ]);
     _eventLog.log(MapEventType.sessionStarted, 'Session started');
+    _startLeaderboardRefreshTimer();
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
@@ -2484,12 +3265,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       case HudPreference.pro:
         return HudPersonality.pro;
       case HudPreference.auto:
-        final captured = _captureService.capturedHexes.length;
-        final isBeginner = _sessionsStartedCount < 2 || captured < 5;
-        final isEarly = _sessionsStartedCount <= 6 || captured <= 30;
-        return (isBeginner || isEarly)
-            ? HudPersonality.guided
-            : HudPersonality.pro;
+        // MVP: Auto always resolves to Guided so new users get the
+        // simplified trail-first experience.
+        return HudPersonality.guided;
     }
   }
 
@@ -2513,28 +3291,28 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Widget _buildGuidedModeMenuButton() {
-    final hudPref = ref.read(gameStateProvider).hudPreference;
     return PopupMenuButton<HudPreference>(
       tooltip: 'HUD mode',
       onSelected: (value) {
         unawaited(_setHudPreference(value));
       },
       itemBuilder: (context) => [
-        CheckedPopupMenuItem(
-          value: HudPreference.auto,
-          checked: hudPref == HudPreference.auto,
-          child: const Text('Auto HUD'),
-        ),
-        CheckedPopupMenuItem(
+        // MVP: Guided is the visible primary mode.
+        // Auto/Pro remain accessible via the "More actions" overflow menu.
+        const CheckedPopupMenuItem(
           value: HudPreference.guided,
-          checked: hudPref == HudPreference.guided,
-          child: const Text('Guided HUD'),
+          checked: true,
+          child: Text('Guided HUD'),
         ),
-        CheckedPopupMenuItem(
-          value: HudPreference.pro,
-          checked: hudPref == HudPreference.pro,
-          child: const Text('Pro HUD'),
-        ),
+        if (_sessionActive) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem<HudPreference>(
+            onTap: () {
+              unawaited(_toggleSession());
+            },
+            child: const Text('End Session'),
+          ),
+        ],
       ],
       child: Container(
         width: 28,
@@ -2554,135 +3332,56 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final targetCopy = guidedTargetHex == null
         ? null
         : _guidedMovementCopy(guidedTargetHex);
-    final direction = _streakDirectionHint();
-
-    if (!_sessionActive) {
-      // Only reference glow when a recommendation target actually exists.
-      final hasGlow = guidedTargetHex != null;
-      return GuidedOverlayCard(
-        message: direction == null
-            ? (hasGlow
-                ? '▶ Start session, then move to the glowing tile'
-                : '▶ Start session to begin capturing tiles')
-            : (hasGlow
-                ? '▶ Start session, then move $direction to the glow'
-                : '▶ Start session, then move $direction'),
-        trailing: _buildGuidedModeMenuButton(),
-      );
-    }
-
-    // First-capture: pure action focus — keep it dead simple.
-    if (_isGuidedFirstCaptureMode) {
-      return GuidedOverlayCard(
-        message: direction == null
-            ? '⚡ Session live - move to the glowing tile'
-            : '⚡ Session live - move $direction to the glow',
-        trailing: _buildGuidedModeMenuButton(),
-      );
-    }
-
-    // Brief post-capture transition.
-    if (_showPostCaptureGuidance) {
-      final hasSectionPressure = _sectionProgress.any(
-        (s) => s.controlState == SectionControlState.contested,
-      );
-      return GuidedOverlayCard(
-        message: direction == null
-            ? (hasSectionPressure
-                  ? '🔥 Great capture. One more tile can swing this section'
-                  : '🔥 Great capture. Take the next glowing tile')
-            : '🔥 Great capture. Capture $direction to extend your streak',
-        trailing: _buildGuidedModeMenuButton(),
-      );
-    }
-
-    // Normal guided mode: objective-aware compact HUD.
-    final mineCount = _captureService.capturedHexes.length;
+    final direction = guidedTargetHex == null
+        ? null
+        : _directionToHex(guidedTargetHex);
     final objective = ref.read(gameStateProvider).currentObjective;
     final onRecommendedTile =
         guidedTargetHex != null &&
         _currentTile.isNotEmpty &&
         guidedTargetHex == _currentTile.toLowerCase();
-    final title = (!onRecommendedTile && guidedTargetHex != null)
-        ? targetCopy!.title
-        : objective.title;
-    final detail = (!onRecommendedTile && guidedTargetHex != null)
-        ? targetCopy!.detail
-        : objective.detail;
 
-    return FrostedOverlayCard(
-      emphasized: _capturePulseActive,
-      borderRadius: const BorderRadius.all(Radius.circular(16)),
-      padding: EdgeInsets.fromLTRB(
-        12,
-        compactHud ? 8 : 10,
-        12,
-        compactHud ? 8 : 10,
+    GuidedTopHudCopy? normalCopy;
+    if (_sessionActive &&
+        !_isGuidedFirstCaptureMode &&
+        !_showPostCaptureGuidance) {
+      normalCopy = GuidedTopHudCopy(
+        title: (!onRecommendedTile && guidedTargetHex != null)
+            ? targetCopy!.title
+            : objective.title,
+        detail: (!onRecommendedTile && guidedTargetHex != null)
+            ? targetCopy!.detail
+            : objective.detail,
+      );
+    }
+
+    return GuidedTopHud(
+      compactHud: compactHud,
+      sessionActive: _sessionActive,
+      isFirstCaptureMode: _isGuidedFirstCaptureMode,
+      showPostCaptureGuidance: _showPostCaptureGuidance,
+      capturePulseActive: _capturePulseActive,
+      hasSectionPressure: _sectionProgress.any(
+        (s) => s.controlState == SectionControlState.contested,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.gps_fixed,
-                size: 14,
-                color: _sessionActive
-                    ? GameUiTokens.accentSecondary
-                    : GameUiTokens.textMid,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  title,
-                  style: GameUiText.body(
-                    color: GameUiTokens.textHi,
-                    size: 13,
-                    weight: FontWeight.w800,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              _buildGuidedModeMenuButton(),
-            ],
-          ),
-          if (detail != null) ...[
-            const SizedBox(height: 3),
-            Text(
-              detail,
-              style: GameUiText.meta(color: GameUiTokens.textMid, size: 11),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: [
-              HudPill(
-                label: 'Tiles',
-                value: '$mineCount',
-                color: mineCount > 0
-                    ? GameUiTokens.accentSecondary
-                    : GameUiTokens.textMid,
-              ),
-              HudPill(
-                label: 'Session',
-                value: _sessionActive
-                    ? 'Live ${_sessionElapsedText()}'
-                    : 'Ready',
-                color: _sessionActive
-                    ? GameUiTokens.accentPrimary
-                    : GameUiTokens.textMid,
-              ),
-            ],
-          ),
-        ],
-      ),
+      direction: direction,
+      hasGlowTarget: guidedTargetHex != null,
+      corridorName: (_showLaunchBanner || _isFarFromCorridor)
+          ? LaunchCorridor.activeTrailName
+          : null,
+      corridorDistance:
+          (_showLaunchBanner || _isFarFromCorridor) &&
+              _corridorEntryDistanceMeters > 0
+          ? _formatDistanceMiles(_corridorEntryDistanceMeters)
+          : null,
+      modeMenuButton: _buildGuidedModeMenuButton(),
+      activityMode: ref.read(gameStateProvider).sessionActivityMode,
+      onLeaderboard: _showLeaderboard,
+      leaderboardRank: _leaderboardRank,
+      leaderboardTiles: _leaderboardTiles,
+      mineCount: _captureService.capturedHexes.length,
+      normalCopy: normalCopy,
+      sessionElapsedText: _sessionElapsedText(),
     );
   }
 
@@ -2698,6 +3397,42 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
+  Widget _buildLaunchCorridorBanner() {
+    return GestureDetector(
+      onTap: () {
+        if (!mounted) return;
+        setState(() {
+          _showLaunchBanner = false;
+          // launchEntryMode is driven by _isFarFromCorridor in the refresh
+          // loop — do not force it off on banner tap.
+        });
+      },
+      child: FrostedOverlayCard(
+        emphasized: true,
+        borderRadius: const BorderRadius.all(Radius.circular(14)),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '🗺️ ${LaunchCorridor.activeTrailName} is live',
+              style: GameUiText.body(
+                color: GameUiTokens.accentPrimary,
+                size: 13,
+                weight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              'More Seattle trails opening soon',
+              style: GameUiText.meta(color: GameUiTokens.textLow, size: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildPremiumTopHud({required bool compactHud, required bool muted}) {
     final mineCount = _captureService.capturedHexes.length;
@@ -2796,7 +3531,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                           break;
                         case 'preview_enemy_tiles':
                           unawaited(
-                            _setShowPreviewEnemyTiles(!ref.read(gameStateProvider).showPreviewEnemyTiles),
+                            _setShowPreviewEnemyTiles(
+                              !ref
+                                  .read(gameStateProvider)
+                                  .showPreviewEnemyTiles,
+                            ),
                           );
                           break;
                         case 'debug_reco':
@@ -2819,23 +3558,31 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       const PopupMenuDivider(),
                       CheckedPopupMenuItem(
                         value: 'auto',
-                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.auto,
+                        checked:
+                            ref.read(gameStateProvider).hudPreference ==
+                            HudPreference.auto,
                         child: const Text('Auto HUD'),
                       ),
                       CheckedPopupMenuItem(
                         value: 'guided',
-                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.guided,
+                        checked:
+                            ref.read(gameStateProvider).hudPreference ==
+                            HudPreference.guided,
                         child: const Text('Guided HUD'),
                       ),
                       CheckedPopupMenuItem(
                         value: 'pro',
-                        checked: ref.read(gameStateProvider).hudPreference == HudPreference.pro,
+                        checked:
+                            ref.read(gameStateProvider).hudPreference ==
+                            HudPreference.pro,
                         child: const Text('Pro HUD'),
                       ),
                       const PopupMenuDivider(),
                       CheckedPopupMenuItem(
                         value: 'preview_enemy_tiles',
-                        checked: ref.read(gameStateProvider).showPreviewEnemyTiles,
+                        checked: ref
+                            .read(gameStateProvider)
+                            .showPreviewEnemyTiles,
                         child: const Text('Preview rival tiles'),
                       ),
                       if (kDebugMode) ...[
@@ -2985,6 +3732,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     final compactHud = _compactHud;
     final topInset = MediaQuery.paddingOf(context).top;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
     final screenSize = MediaQuery.sizeOf(context);
     final hudPersonality = _resolveHudPersonality();
     final guidedMode = hudPersonality == HudPersonality.guided;
@@ -3018,24 +3766,45 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             cameraOptions: mb.CameraOptions(
               center: mb.Point(coordinates: mb.Position(-122.3321, 47.6062)),
               zoom: 11.5,
+              pitch: 45,
             ),
             onMapCreated: (mapboxMap) async {
               _map = mapboxMap;
               await _mapRenderService.attachMap(mapboxMap);
 
-              if (_lastLat != null && _lastLng != null) {
-                await _refreshMapForCoordinates(
-                  _lastLat!,
-                  _lastLng!,
-                  moveCamera: false,
-                  accuracy: _lastAccuracy,
-                );
-              }
-
-              await _syncRecommendedTileGlow(
-                currentLat: _lastLat,
-                currentLng: _lastLng,
+              // Enable the native location puck so the user's live position
+              // is visible on the map as a blue dot.
+              await mapboxMap.location.updateSettings(
+                mb.LocationComponentSettings(
+                  enabled: true,
+                  pulsingEnabled: true,
+                  puckBearingEnabled: true,
+                  puckBearing: mb.PuckBearing.HEADING,
+                ),
               );
+
+              // Defer provider-mutating work so it does not run while the
+              // widget tree is still building (Riverpod guard).
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                if (!mounted) return;
+
+                // Draw corridor lane as soon as map is ready.
+                unawaited(_drawCorridorLaneIfNeeded());
+
+                if (_lastLat != null && _lastLng != null) {
+                  await _refreshMapForCoordinates(
+                    _lastLat!,
+                    _lastLng!,
+                    moveCamera: false,
+                    accuracy: _lastAccuracy,
+                  );
+                }
+
+                await _syncRecommendedTileGlow(
+                  currentLat: _lastLat,
+                  currentLng: _lastLng,
+                );
+              });
             },
           ),
           Positioned.fill(
@@ -3138,9 +3907,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             Positioned(
               left: 12,
               right: 12,
-              bottom: guidedMode
-                  ? (compactHud ? 84 : 98)
-                  : (compactHud ? 90 : 110),
+              bottom:
+                  bottomInset +
+                  (guidedMode
+                      ? (compactHud ? 84 : 98)
+                      : (compactHud ? 90 : 110)),
               child: IgnorePointer(
                 child: Align(
                   alignment: Alignment.bottomLeft,
@@ -3171,27 +3942,39 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             Positioned(
               left: 16,
               right: 16,
-              bottom: guidedMode
-                  ? (useGuidedStickyBar
-                        ? (compactHud ? 72 : 80)
-                        : (compactHud ? 132 : 154))
-                  : (compactHud ? 138 : 168),
+              bottom:
+                  bottomInset +
+                  (guidedMode
+                      ? (useGuidedStickyBar
+                            ? (compactHud ? 72 : 80)
+                            : (compactHud ? 132 : 154))
+                      : (compactHud ? 138 : 168)),
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 180),
                 opacity: _bottomHudVisible ? 1 : 0,
                 child: firstCaptureGuidedMode
                     ? const SizedBox.shrink()
-                    : _buildSelectedTileInfoCard(
+                    : SelectedTileInfoCard(
                         tile: gs.selectedTile!,
                         guidedMode: guidedMode,
                         compactHud: compactHud,
+                        h3Resolution: h3Resolution,
+                        onDismiss: _dismissSelection,
                       ),
               ),
+            ),
+          // Launch corridor banner (one-trail-first state)
+          if (_showLaunchBanner && guidedMode)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: bottomInset + (compactHud ? 180 : 210),
+              child: _buildLaunchCorridorBanner(),
             ),
           Positioned(
             left: 16,
             right: 16,
-            bottom: compactHud ? 10 : 16,
+            bottom: bottomInset + (compactHud ? 10 : 16),
             child: AnimatedSlide(
               duration: bottomSlideDuration,
               curve: Curves.easeOutCubic,
