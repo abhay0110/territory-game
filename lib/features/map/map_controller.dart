@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
+import '../../core/constants/launch_corridor.dart';
 import '../../models/game_tile.dart';
 import '../../src/data/services/capture_service.dart';
 import '../../src/data/services/location_service.dart';
@@ -38,15 +40,19 @@ class MapController {
 
   Future<MapBootstrapResult> initialize() async {
     await captureService.loadFromPrefs();
+    debugPrint('[MapCtrl] initialize: local capturedHexes=${captureService.capturedHexes.length}');
 
     try {
       await captureService.ensureSignedIn();
       final uid = captureService.currentUserId;
+      debugPrint('[MapCtrl] initialize: signedIn userId=$uid');
       if (uid != null) {
         await captureService.loadFromSupabase(uid);
+        debugPrint('[MapCtrl] initialize: after Supabase sync, capturedHexes=${captureService.capturedHexes.length}');
       }
       return const MapBootstrapResult(synced: true);
     } catch (error) {
+      debugPrint('[MapCtrl] initialize: sync failed: $error');
       return MapBootstrapResult(synced: false, error: error);
     }
   }
@@ -73,6 +79,8 @@ class MapController {
     double radiusMeters = 1500,
     int nearbyRingSize = 7,
     bool includePreviewEnemyTiles = true,
+    bool trailOnlyRendering = false,
+    List<String>? corridorHexes,
   }) async {
     final currentHex = await captureService.getCurrentHexForPosition(
       latitude,
@@ -96,6 +104,15 @@ class MapController {
       for (final tile in capturedTiles) tile.h3Index.toLowerCase(): tile,
       for (final tile in nearbyTiles) tile.h3Index.toLowerCase(): tile,
     };
+
+    // Merge corridor ownership for trail hexes beyond the nearby ring.
+    if (corridorHexes != null && corridorHexes.isNotEmpty) {
+      await captureService.refreshCorridorOwners(corridorHexes);
+      final corridorTiles = await captureService.getCorridorTiles();
+      for (final tile in corridorTiles) {
+        tileByHex.putIfAbsent(tile.h3Index.toLowerCase(), () => tile);
+      }
+    }
 
     for (final hex in neighborHexes) {
       tileByHex.putIfAbsent(
@@ -137,10 +154,33 @@ class MapController {
 
     await mapRenderService.drawCurrentTile(currentTile);
 
+    // When near trail, only render trail-relevant hexes to keep the
+    // battlefield focused on the active corridor.
+    final renderTiles = trailOnlyRendering
+        ? visibleTiles.where((t) {
+            if (t.ownership != TileOwnership.neutral) return true;
+            final hex = t.h3Index.toLowerCase();
+            return LaunchCorridor.displayHexes.contains(hex);
+          }).toList()
+        : visibleTiles;
+
+    // Your own captures are always visible regardless of distance so you
+    // can see your progress from anywhere.  Enemy/rival corridor captures
+    // also bypass the distance check so the trail's competitive status is
+    // always visible.
+    final alwaysVisibleHexes = <String>{
+      for (final entry in tileByHex.entries)
+        if (entry.value.ownership == TileOwnership.mine ||
+            (entry.value.ownership != TileOwnership.neutral &&
+                LaunchCorridor.displayHexes.contains(entry.key)))
+          entry.key,
+    };
+
     await mapRenderService.updateVisibleCapturedTilesByHex(
       currentHex: currentHex,
-      tiles: visibleTiles,
+      tiles: renderTiles,
       radiusMeters: radiusMeters,
+      alwaysVisibleHexes: alwaysVisibleHexes,
     );
 
     return MapRefreshResult(
@@ -239,10 +279,14 @@ class MapController {
     final existingTile = captureService.getTileByHex(currentHex);
     final now = DateTime.now();
 
+    debugPrint('[MapCtrl] captureTile($currentHex) acc=$accuracy '
+        'existing=${existingTile?.ownership} userId=$userId');
+
     if (existingTile != null &&
         existingTile.ownership == TileOwnership.enemy &&
         existingTile.protectedUntil != null &&
         existingTile.protectedUntil!.isAfter(now)) {
+      debugPrint('[MapCtrl] ✘ protectedByRival until ${existingTile.protectedUntil}');
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.protectedByRival,
         protectedUntil: existingTile.protectedUntil,
@@ -250,6 +294,7 @@ class MapController {
     }
 
     if (accuracy == null || accuracy > maxAllowedAccuracyMeters) {
+      debugPrint('[MapCtrl] ✘ lowAccuracy: $accuracy > $maxAllowedAccuracyMeters');
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.lowAccuracy,
         accuracy: accuracy,
@@ -266,12 +311,14 @@ class MapController {
     );
 
     if (distanceToCenter > maxCaptureDistanceMeters) {
+      debugPrint('[MapCtrl] ✘ tooFarFromCenter: ${distanceToCenter.toStringAsFixed(1)}m > ${maxCaptureDistanceMeters}m');
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.tooFarFromCenter,
         distanceToCenter: distanceToCenter,
       );
     }
 
+    debugPrint('[MapCtrl] ✔ eligible — calling captureService.captureTile');
     final captureResult = await captureService.captureTile(currentHex);
 
     final status = switch (existingTile?.ownership) {
@@ -280,6 +327,7 @@ class MapController {
       _ => CaptureAttemptStatus.captured,
     };
 
+    debugPrint('[MapCtrl] captureTile result: status=$status synced=${captureResult.synced}');
     return CaptureAttemptResult(
       status: status,
       synced: captureResult.synced,
@@ -296,6 +344,8 @@ class MapController {
     double radiusMeters = 1500,
     int nearbyRingSize = 7,
     bool includePreviewEnemyTiles = true,
+    bool trailOnlyRendering = false,
+    List<String>? corridorHexes,
   }) async {
     final captureAttempt = await captureTile(
       currentHex: currentHex,
@@ -315,6 +365,8 @@ class MapController {
       radiusMeters: radiusMeters,
       nearbyRingSize: nearbyRingSize,
       includePreviewEnemyTiles: includePreviewEnemyTiles,
+      trailOnlyRendering: trailOnlyRendering,
+      corridorHexes: corridorHexes,
     );
 
     return CaptureFlowResult(captureAttempt: captureAttempt, refresh: refresh);

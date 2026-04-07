@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "375048332121",
+    "project_id": "hextrail",
+    "storage_bucket": "hextrail.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:375048332121:android:ca51ae9a453907fdbde248",
+        "android_client_info": {
+          "package_name": "com.hextrail.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDpqtQRRkTVvuQ-qDpBReRcNmpWv-_Gfws"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

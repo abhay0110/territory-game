@@ -9,7 +9,7 @@ void main() {
 
   const maxCapture = 80.0; // MapController.maxCaptureDistanceMeters
 
-  TrailSectionDefinition _sectionDef({String name = 'Test Section'}) =>
+  TrailSectionDefinition sectionDef({String name = 'Test Section'}) =>
       TrailSectionDefinition(
         id: 'section_test',
         trailId: 'test_trail',
@@ -20,7 +20,7 @@ void main() {
         orderedH3Indexes: List.generate(10, (i) => 'hex_$i'),
       );
 
-  TrailSectionProgress _section({
+  TrailSectionProgress section({
     SectionControlState controlState = SectionControlState.unclaimed,
     String? bestNextTileH3,
     int tilesToTakeControl = 5,
@@ -28,7 +28,7 @@ void main() {
     bool isAtRisk = false,
   }) =>
       TrailSectionProgress(
-        section: _sectionDef(),
+        section: sectionDef(),
         ownedTiles: 0,
         rivalTiles: 0,
         leadingOwnerId: null,
@@ -43,7 +43,7 @@ void main() {
         bestNextTileH3: bestNextTileH3,
       );
 
-  GameTile _tile(String hex, {TileOwnership ownership = TileOwnership.neutral}) =>
+  GameTile tile(String hex, {TileOwnership ownership = TileOwnership.neutral}) =>
       GameTile(h3Index: hex, ownership: ownership);
 
   // ── Section signals ─────────────────────────────────────
@@ -52,7 +52,7 @@ void main() {
     test('returns all-false when no section matches the hex', () {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
-        [_section(bestNextTileH3: 'hex_b')],
+        [section(bestNextTileH3: 'hex_b')],
       );
 
       expect(signals.pressure, false);
@@ -77,7 +77,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
           ),
@@ -91,7 +91,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.contested,
             bestNextTileH3: 'hex_a',
           ),
@@ -105,7 +105,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
             canFlipWithNextCapture: true,
@@ -120,7 +120,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
             tilesToTakeControl: 1,
@@ -135,7 +135,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.you,
             bestNextTileH3: 'hex_a',
             isAtRisk: true,
@@ -150,7 +150,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
             isAtRisk: true,
@@ -166,7 +166,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.you,
             bestNextTileH3: 'hex_a',
           ),
@@ -180,7 +180,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.unclaimed,
             bestNextTileH3: 'hex_a',
           ),
@@ -194,7 +194,7 @@ void main() {
       final signals = RecommendationScoringService.sectionSignalsForHex(
         'hex_a',
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'HEX_A',
           ),
@@ -210,7 +210,7 @@ void main() {
   group('scoreCandidate', () {
     test('base score applied at zero distance with no bonuses', () {
       final result = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a', ownership: TileOwnership.mine),
+        tile('hex_a', ownership: TileOwnership.mine),
         0, // zero distance
         {},
         [],
@@ -223,7 +223,7 @@ void main() {
 
     test('distance penalty increases with distance', () {
       final close = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         10,
         {},
         [],
@@ -231,7 +231,7 @@ void main() {
       );
 
       final far = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         70,
         {},
         [],
@@ -244,7 +244,7 @@ void main() {
 
     test('max distance penalty is fully applied at maxCaptureDistance', () {
       final result = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         maxCapture,
         {},
         [],
@@ -259,7 +259,7 @@ void main() {
 
     test('distance beyond max is clamped', () {
       final atMax = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         maxCapture,
         {},
         [],
@@ -267,7 +267,7 @@ void main() {
       );
 
       final beyond = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         maxCapture * 2,
         {},
         [],
@@ -279,7 +279,7 @@ void main() {
 
     test('streak bonus applied when hex is in streak targets', () {
       final without = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         10,
         {},
         [],
@@ -287,7 +287,7 @@ void main() {
       );
 
       final with_ = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         10,
         {'hex_a'},
         [],
@@ -303,7 +303,7 @@ void main() {
 
     test('neutral tile gets higher ownership bonus than mine', () {
       final neutralTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a', ownership: TileOwnership.neutral),
+        tile('hex_a', ownership: TileOwnership.neutral),
         10,
         {},
         [],
@@ -311,7 +311,7 @@ void main() {
       );
 
       final mineTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a', ownership: TileOwnership.mine),
+        tile('hex_a', ownership: TileOwnership.mine),
         10,
         {},
         [],
@@ -325,7 +325,7 @@ void main() {
 
     test('rival tile gets ownership bonus', () {
       final result = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a', ownership: TileOwnership.enemy),
+        tile('hex_a', ownership: TileOwnership.enemy),
         10,
         {},
         [],
@@ -337,11 +337,11 @@ void main() {
 
     test('section flip bonus applied for flip-eligible section', () {
       final result = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a'),
+        tile('hex_a'),
         10,
         {},
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
             canFlipWithNextCapture: true,
@@ -359,7 +359,7 @@ void main() {
     test('streak extension target beats weaker nearby fallback', () {
       // Tile A: streak target, farther
       final streakTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_streak'),
+        tile('hex_streak'),
         60,
         {'hex_streak'},
         [],
@@ -368,7 +368,7 @@ void main() {
 
       // Tile B: neutral non-streak, closer
       final fallbackTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_fallback'),
+        tile('hex_fallback'),
         20,
         {},
         [],
@@ -381,11 +381,11 @@ void main() {
     test('section impact target beats weaker nearby fallback', () {
       // Tile A: section flip candidate, farther
       final sectionTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_section'),
+        tile('hex_section'),
         60,
         {},
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_section',
             canFlipWithNextCapture: true,
@@ -396,7 +396,7 @@ void main() {
 
       // Tile B: plain neutral, closer
       final fallbackTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_plain'),
+        tile('hex_plain'),
         20,
         {},
         [],
@@ -409,11 +409,11 @@ void main() {
     test('score is clamped to [0, scoreMax]', () {
       // Maximum bonuses: all signals + streak + rival
       final result = RecommendationScoringService.scoreCandidate(
-        _tile('hex_a', ownership: TileOwnership.enemy),
+        tile('hex_a', ownership: TileOwnership.enemy),
         0,
         {'hex_a'},
         [
-          _section(
+          section(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_a',
             canFlipWithNextCapture: true,
@@ -430,7 +430,7 @@ void main() {
     test('owned current tile does not become recommendation when better nearby exists', () {
       // Owned tile at zero distance: base=26, no ownership bonus
       final ownedTile = RecommendationScoringService.scoreCandidate(
-        _tile('hex_owned', ownership: TileOwnership.mine),
+        tile('hex_owned', ownership: TileOwnership.mine),
         0,
         {},
         [],
@@ -439,7 +439,7 @@ void main() {
 
       // Neutral tile very close + streak target → significant bonuses
       final betterNearby = RecommendationScoringService.scoreCandidate(
-        _tile('hex_neutral', ownership: TileOwnership.neutral),
+        tile('hex_neutral', ownership: TileOwnership.neutral),
         10,
         {'hex_neutral'},
         [],
@@ -465,8 +465,8 @@ void main() {
     test('returns top candidate when no current recommendation', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 50.0, tile: _tile('hex_a')),
-          (score: 40.0, tile: _tile('hex_b')),
+          (score: 50.0, tile: tile('hex_a')),
+          (score: 40.0, tile: tile('hex_b')),
         ],
         currentRecommendedHex: null,
       );
@@ -477,8 +477,8 @@ void main() {
     test('keeps current tile when new top is within switch margin', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 50.0, tile: _tile('hex_new')),
-          (score: 45.0, tile: _tile('hex_current')),
+          (score: 50.0, tile: tile('hex_new')),
+          (score: 45.0, tile: tile('hex_current')),
         ],
         currentRecommendedHex: 'hex_current',
       );
@@ -490,8 +490,8 @@ void main() {
     test('switches to new tile when gap exceeds switch margin', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 60.0, tile: _tile('hex_new')),
-          (score: 40.0, tile: _tile('hex_current')),
+          (score: 60.0, tile: tile('hex_new')),
+          (score: 40.0, tile: tile('hex_current')),
         ],
         currentRecommendedHex: 'hex_current',
       );
@@ -503,8 +503,8 @@ void main() {
     test('keeps current tile on exact tie within hold margin', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 46.0, tile: _tile('hex_new')),
-          (score: 45.0, tile: _tile('hex_current')),
+          (score: 46.0, tile: tile('hex_new')),
+          (score: 45.0, tile: tile('hex_current')),
         ],
         currentRecommendedHex: 'hex_current',
       );
@@ -516,8 +516,8 @@ void main() {
     test('current tile not in candidates → uses top candidate', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 50.0, tile: _tile('hex_a')),
-          (score: 40.0, tile: _tile('hex_b')),
+          (score: 50.0, tile: tile('hex_a')),
+          (score: 40.0, tile: tile('hex_b')),
         ],
         currentRecommendedHex: 'hex_gone',
       );
@@ -528,8 +528,8 @@ void main() {
     test('hex matching is case-insensitive', () {
       final result = RecommendationScoringService.applyHysteresis(
         rankedCandidates: [
-          (score: 50.0, tile: _tile('hex_new')),
-          (score: 45.0, tile: _tile('HEX_CURRENT')),
+          (score: 50.0, tile: tile('hex_new')),
+          (score: 45.0, tile: tile('HEX_CURRENT')),
         ],
         currentRecommendedHex: 'hex_current',
       );

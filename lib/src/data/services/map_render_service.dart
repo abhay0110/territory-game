@@ -30,6 +30,8 @@ class MapRenderService {
 
   final Map<String, mb.PolygonAnnotation> _capturedPolyByHex = {};
   final Set<String> _visibleCapturedHex = {};
+  final Map<String, ({TileOwnership ownership, bool isProtected})>
+      _visibleCapturedState = {};
   final Map<String, ({double lat, double lng})> _centroidCache = {};
 
   /// When true, off-corridor captured tiles are rendered very faintly and the
@@ -65,8 +67,13 @@ class MapRenderService {
         tile.protectedUntil != null && tile.protectedUntil!.isAfter(now);
 
     // In launch-entry mode, off-corridor tiles are desaturated and ghosted.
-    final onCorridor = LaunchCorridor.isOnCorridor(tile.h3Index.toLowerCase());
-    final mute = launchEntryMode && !onCorridor;
+    // Own captures are never muted so the player always sees their progress.
+    // Use displayHexes (core + 1-ring expansion) so edge-of-trail enemy
+    // captures also render with full colour.
+    final isOwn = tile.ownership == TileOwnership.mine;
+    final onCorridor =
+        LaunchCorridor.displayHexes.contains(tile.h3Index.toLowerCase());
+    final mute = launchEntryMode && !isOwn && !onCorridor;
 
     final fillColor = mute
         ? _mutedFillColor
@@ -80,9 +87,9 @@ class MapRenderService {
 
     final baseOpacity = switch (tile.ownership) {
       TileOwnership.mine =>
-        isCurrent ? (isProtected ? 0.52 : 0.42) : (isProtected ? 0.34 : 0.24),
+        isCurrent ? (isProtected ? 0.52 : 0.42) : (isProtected ? 0.55 : 0.45),
       TileOwnership.enemy =>
-        isCurrent ? (isProtected ? 0.50 : 0.40) : (isProtected ? 0.32 : 0.20),
+        isCurrent ? (isProtected ? 0.50 : 0.40) : (isProtected ? 0.45 : 0.35),
       TileOwnership.neutral => isCurrent ? 0.48 : 0.30,
     };
     final opacity = mute ? baseOpacity * _mutedOpacityScale : baseOpacity;
@@ -192,6 +199,12 @@ class MapRenderService {
       final poly = await _capturedMgr!.create(options);
       _capturedPolyByHex[hexLower] = poly;
       _visibleCapturedHex.add(hexLower);
+      final now = DateTime.now();
+      _visibleCapturedState[hexLower] = (
+        ownership: tile.ownership,
+        isProtected: tile.protectedUntil != null &&
+            tile.protectedUntil!.isAfter(now),
+      );
     } else {
       if (!_visibleCapturedHex.contains(hexLower)) return;
 
@@ -201,6 +214,41 @@ class MapRenderService {
         _capturedPolyByHex.remove(hexLower);
       }
       _visibleCapturedHex.remove(hexLower);
+      _visibleCapturedState.remove(hexLower);
+    }
+  }
+
+  /// Re-draw an already-visible hex if its ownership or protection changed.
+  Future<void> _updateCapturedIfChanged(GameTile tile) async {
+    final hexLower = tile.h3Index.toLowerCase();
+    final prev = _visibleCapturedState[hexLower];
+    if (prev == null) return; // not visible — nothing to update
+
+    final now = DateTime.now();
+    final isProtected =
+        tile.protectedUntil != null && tile.protectedUntil!.isAfter(now);
+
+    if (prev.ownership == tile.ownership &&
+        prev.isProtected == isProtected) {
+      return; // no change
+    }
+
+    // Delete old polygon and re-create with updated style.
+    await setCapturedVisible(tile, false);
+    await setCapturedVisible(tile, true);
+  }
+
+  /// Force-redraw a single hex with updated tile data.
+  ///
+  /// Called immediately after a confirmed capture so the tile turns green
+  /// without waiting for the next periodic refresh cycle.
+  Future<void> forceRedrawHex(GameTile tile) async {
+    final hexLower = tile.h3Index.toLowerCase();
+    if (_visibleCapturedHex.contains(hexLower)) {
+      await setCapturedVisible(tile, false);
+      await setCapturedVisible(tile, true);
+    } else {
+      await setCapturedVisible(tile, true);
     }
   }
 
@@ -225,6 +273,7 @@ class MapRenderService {
       _capturedPolyByHex.remove(hexLower);
     }
     _visibleCapturedHex.remove(hexLower);
+    _visibleCapturedState.remove(hexLower);
   }
 
   // ── Geometry helpers ──────────────────────────────────────────────────────
@@ -279,11 +328,15 @@ class MapRenderService {
   }
 
   /// Show/hide all tiles within [radiusMeters] of [centerLat]/[centerLng].
+  ///
+  /// Hexes listed in [alwaysVisibleHexes] bypass the distance check so
+  /// trail ownership is visible regardless of the user's position.
   Future<void> updateVisibleCapturedTiles({
     required double centerLat,
     required double centerLng,
     required double radiusMeters,
     required List<GameTile> tiles,
+    Set<String>? alwaysVisibleHexes,
   }) async {
     await _ensureManagers();
     if (_capturedMgr == null) return;
@@ -296,6 +349,12 @@ class MapRenderService {
     final Set<String> shouldBeVisible = {};
     for (final hexLower in allKnownHexes) {
       try {
+        // Corridor hexes with ownership always render.
+        if (alwaysVisibleHexes != null &&
+            alwaysVisibleHexes.contains(hexLower)) {
+          shouldBeVisible.add(hexLower);
+          continue;
+        }
         final cell = BigInt.parse(hexLower, radix: 16);
         final c = cellCentroid(cell, hexLower);
         if (haversineMeters(centerLat, centerLng, c.lat, c.lng) <=
@@ -303,6 +362,14 @@ class MapRenderService {
           shouldBeVisible.add(hexLower);
         }
       } catch (_) {}
+    }
+
+    // Update ownership/protection for already-visible hexes.
+    for (final hex in shouldBeVisible.intersection(_visibleCapturedHex)) {
+      final tile = tileByHex[hex];
+      if (tile != null) {
+        await _updateCapturedIfChanged(tile);
+      }
     }
 
     for (final hex in shouldBeVisible.difference(_visibleCapturedHex)) {
@@ -330,6 +397,7 @@ class MapRenderService {
     required String currentHex,
     required List<GameTile> tiles,
     double radiusMeters = 1500,
+    Set<String>? alwaysVisibleHexes,
   }) async {
     final hexBigInt = BigInt.parse(currentHex, radix: 16);
     final center = cellCentroid(hexBigInt, currentHex);
@@ -339,6 +407,7 @@ class MapRenderService {
       centerLng: center.lng,
       radiusMeters: radiusMeters,
       tiles: tiles,
+      alwaysVisibleHexes: alwaysVisibleHexes,
     );
   }
 

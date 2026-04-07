@@ -1,5 +1,8 @@
+import 'dart:math' as math;
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/constants/launch_corridor.dart';
 import '../../../core/constants/seattle_trails.dart';
 import '../../../core/constants/seattle_trail_sections.dart';
 import '../../../models/trail_section.dart';
@@ -46,6 +49,7 @@ class TrailLeaderboardSnapshot {
   final int? yourRank; // 1-based, null if not on board
   final int yourTotalTiles;
   final int trailTotalTiles;
+  final int totalPlayers;
   final List<SectionLeaderSnapshot> sections;
 
   const TrailLeaderboardSnapshot({
@@ -54,6 +58,7 @@ class TrailLeaderboardSnapshot {
     required this.yourRank,
     required this.yourTotalTiles,
     required this.trailTotalTiles,
+    required this.totalPlayers,
     required this.sections,
   });
 }
@@ -70,22 +75,29 @@ class TrailLeaderboardService {
     final trail = SeattleTrailDefinitions.trails.firstWhere(
       (t) => t.id == 'burke_gilman',
     );
-    final trailHexes = trail.orderedH3Indexes.toSet();
+    // Use displayHexes (core + 1-ring visual corridor) so captures on
+    // trail-edge hexes count toward the leaderboard.
+    final trailHexes = LaunchCorridor.displayHexes;
     final currentUserId = _supabase.auth.currentUser?.id;
 
-    // Fetch all tile_captures rows for Burke-Gilman hexes.
-    // ~350 hexes — safe for a single inFilter query.
+    // Fetch all tile_captures rows for corridor hexes.
+    // Batch to stay within Supabase REST URL-length limits.
     final hexList = trailHexes.toList();
-    List<dynamic> rows;
+    final List<dynamic> rows = [];
     try {
-      rows =
-          await _supabase
-                  .from('tile_captures')
-                  .select('h3_hex, owner_user_id')
-                  .eq('h3_res', 9)
-                  .inFilter('h3_hex', hexList)
-              as List<dynamic>? ??
-          [];
+      const batchSize = 200;
+      for (var i = 0; i < hexList.length; i += batchSize) {
+        final batch = hexList.sublist(i, math.min(i + batchSize, hexList.length));
+        final batchRows =
+            await _supabase
+                    .from('tile_captures')
+                    .select('h3_hex, owner_user_id')
+                    .eq('h3_res', 9)
+                    .inFilter('h3_hex', batch)
+                as List<dynamic>? ??
+            [];
+        rows.addAll(batchRows);
+      }
     } catch (_) {
       return null;
     }
@@ -178,6 +190,7 @@ class TrailLeaderboardService {
       yourRank: yourRank,
       yourTotalTiles: yourTotalTiles,
       trailTotalTiles: trail.totalTiles,
+      totalPlayers: sorted.length,
       sections: sectionSnapshots,
     );
   }

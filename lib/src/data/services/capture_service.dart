@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/notification_service.dart';
 import '../../../core/constants/game_rules.dart';
 import '../../../models/game_tile.dart';
 
@@ -24,6 +27,7 @@ class CaptureService {
   final Map<String, GameTile> _capturedTilesByHex = {};
   final Map<String, String> nearbyOwnerByHex = {};
   final Map<String, GameTile> _nearbyTilesByHex = {};
+  final Map<String, GameTile> _corridorTilesByHex = {};
 
   GameTile _buildOwnedTile(
     String hexLower, {
@@ -50,14 +54,20 @@ class CaptureService {
     DateTime? capturedAt,
     DateTime? lastRefreshedAt,
   }) {
-    _capturedTilesByHex.putIfAbsent(
-      hexLower,
-      () => _buildOwnedTile(
+    // Always overwrite when real timestamps are provided so Supabase data
+    // replaces the DateTime.now() defaults created during loadFromPrefs.
+    if (capturedAt != null || lastRefreshedAt != null) {
+      _capturedTilesByHex[hexLower] = _buildOwnedTile(
         hexLower,
         capturedAt: capturedAt,
         lastRefreshedAt: lastRefreshedAt,
-      ),
-    );
+      );
+    } else {
+      _capturedTilesByHex.putIfAbsent(
+        hexLower,
+        () => _buildOwnedTile(hexLower),
+      );
+    }
   }
 
   GameTile _buildNearbyTile(
@@ -89,6 +99,9 @@ class CaptureService {
   Future<void> ensureSignedIn() async {
     if (supabaseClient.auth.currentUser != null) return;
     await supabaseClient.auth.signInAnonymously();
+    await NotificationService().storeToken(
+      Supabase.instance.client.auth.currentUser!.id,
+    );
   }
 
   Future<void> loadFromPrefs() async {
@@ -119,20 +132,11 @@ class CaptureService {
   }
 
   Future<void> loadFromSupabase(String userId) async {
-    List<dynamic>? rows;
-    try {
-      rows = await supabaseClient
-          .from('user_tile_captures')
-          .select('h3_hex, captured_at, last_refreshed_at')
-          .eq('user_id', userId)
-          .eq('h3_res', h3Resolution) as List<dynamic>?;
-    } catch (_) {
-      rows = await supabaseClient
-          .from('user_tile_captures')
-          .select('h3_hex')
-          .eq('user_id', userId)
-          .eq('h3_res', h3Resolution) as List<dynamic>?;
-    }
+    final rows = await supabaseClient
+        .from('user_tile_captures')
+        .select('h3_hex, captured_at, last_refreshed_at')
+        .eq('user_id', userId)
+        .eq('h3_res', h3Resolution) as List<dynamic>?;
     if (rows == null) return;
 
     bool changed = false;
@@ -153,111 +157,54 @@ class CaptureService {
     }
   }
 
-  Future<void> upsertCapture(String userId, String hexLower) async {
-    await _upsertCaptureWithMetadata(
-      userId: userId,
-      hexLower: hexLower,
-      capturedAt: null,
-      lastRefreshedAt: null,
-      protectedUntil: null,
-    );
-  }
-
-  Future<void> upsertOwnership(String userId, String hexLower) async {
-    await _upsertOwnershipWithMetadata(
-      userId: userId,
-      hexLower: hexLower,
-      capturedAt: null,
-      lastRefreshedAt: null,
-      protectedUntil: null,
-    );
-  }
-
   Future<void> _upsertCaptureWithMetadata({
     required String userId,
     required String hexLower,
-    required DateTime? capturedAt,
-    required DateTime? lastRefreshedAt,
-    required DateTime? protectedUntil,
+    required DateTime capturedAt,
+    required DateTime lastRefreshedAt,
+    required DateTime protectedUntil,
   }) async {
-    final payloadWithMetadata = {
-      'user_id': userId,
-      'h3_res': h3Resolution,
-      'h3_hex': hexLower,
-      if (capturedAt != null) 'captured_at': capturedAt.toUtc().toIso8601String(),
-      if (lastRefreshedAt != null)
+    await supabaseClient.from('user_tile_captures').upsert(
+      {
+        'user_id': userId,
+        'h3_res': h3Resolution,
+        'h3_hex': hexLower,
+        'captured_at': capturedAt.toUtc().toIso8601String(),
         'last_refreshed_at': lastRefreshedAt.toUtc().toIso8601String(),
-      if (protectedUntil != null)
         'protected_until': protectedUntil.toUtc().toIso8601String(),
-    };
-
-    try {
-      await supabaseClient.from('user_tile_captures').upsert(
-        payloadWithMetadata,
-        onConflict: 'user_id,h3_res,h3_hex',
-      );
-    } catch (_) {
-      await supabaseClient.from('user_tile_captures').upsert(
-        {
-          'user_id': userId,
-          'h3_res': h3Resolution,
-          'h3_hex': hexLower,
-        },
-        onConflict: 'user_id,h3_res,h3_hex',
-      );
-    }
+      },
+      onConflict: 'user_id,h3_res,h3_hex',
+    );
+    debugPrint('[Capture] user_tile_captures upsert OK for $hexLower');
   }
 
   Future<void> _upsertOwnershipWithMetadata({
     required String userId,
     required String hexLower,
-    required DateTime? capturedAt,
-    required DateTime? lastRefreshedAt,
-    required DateTime? protectedUntil,
+    required DateTime capturedAt,
+    required DateTime lastRefreshedAt,
+    required DateTime protectedUntil,
   }) async {
-    final payloadWithMetadata = {
-      'h3_res': h3Resolution,
-      'h3_hex': hexLower,
-      'owner_user_id': userId,
-      if (capturedAt != null) 'captured_at': capturedAt.toUtc().toIso8601String(),
-      if (lastRefreshedAt != null)
+    await supabaseClient.from('tile_captures').upsert(
+      {
+        'h3_res': h3Resolution,
+        'h3_hex': hexLower,
+        'owner_user_id': userId,
+        'captured_at': capturedAt.toUtc().toIso8601String(),
         'last_refreshed_at': lastRefreshedAt.toUtc().toIso8601String(),
-      if (protectedUntil != null)
         'protected_until': protectedUntil.toUtc().toIso8601String(),
-    };
-
-    try {
-      await supabaseClient.from('tile_captures').upsert(
-        payloadWithMetadata,
-        onConflict: 'h3_res,h3_hex',
-      );
-    } catch (_) {
-      await supabaseClient.from('tile_captures').upsert(
-        {
-          'h3_res': h3Resolution,
-          'h3_hex': hexLower,
-          'owner_user_id': userId,
-        },
-        onConflict: 'h3_res,h3_hex',
-      );
-    }
+      },
+      onConflict: 'h3_res,h3_hex',
+    );
+    debugPrint('[Capture] tile_captures upsert OK for $hexLower (owner=$userId)');
   }
 
   Future<void> refreshNearbyOwners(List<String> hexes) async {
-    List<dynamic>? rows;
-    try {
-      rows = await supabaseClient
-          .from('tile_captures')
-          .select('h3_hex, owner_user_id, captured_at, last_refreshed_at, protected_until')
-          .eq('h3_res', h3Resolution)
-          .inFilter('h3_hex', hexes) as List<dynamic>?;
-    } catch (_) {
-      rows = await supabaseClient
-          .from('tile_captures')
-          .select('h3_hex, owner_user_id')
-          .eq('h3_res', h3Resolution)
-          .inFilter('h3_hex', hexes) as List<dynamic>?;
-    }
+    final rows = await supabaseClient
+        .from('tile_captures')
+        .select('h3_hex, owner_user_id, captured_at, last_refreshed_at, protected_until')
+        .eq('h3_res', h3Resolution)
+        .inFilter('h3_hex', hexes) as List<dynamic>?;
     if (rows == null) return;
 
     nearbyOwnerByHex.clear();
@@ -324,11 +271,18 @@ class CaptureService {
       lastRefreshedAt: now,
     );
 
+    debugPrint('[Capture] captureTile($normalizedHex) — userId=$currentUserId');
+
+    // Optimistically update local state so the capture attempt can proceed.
+    final wasAlreadyCaptured = capturedHexes.contains(normalizedHex);
+    final previousCapturedTile = _capturedTilesByHex[normalizedHex];
+    final previousNearbyTile = _nearbyTilesByHex[normalizedHex];
+    final previousNearbyOwner = nearbyOwnerByHex[normalizedHex];
+
     capturedHexes.add(normalizedHex);
     _capturedTilesByHex[normalizedHex] = capturedTile;
     _nearbyTilesByHex.remove(normalizedHex);
     nearbyOwnerByHex.remove(normalizedHex);
-    await saveToPrefs();
 
     var synced = false;
     final userId = currentUserId;
@@ -337,19 +291,55 @@ class CaptureService {
         await _upsertCaptureWithMetadata(
           userId: userId,
           hexLower: normalizedHex,
-          capturedAt: capturedTile.capturedAt,
-          lastRefreshedAt: capturedTile.lastRefreshedAt,
-          protectedUntil: capturedTile.protectedUntil,
+          capturedAt: capturedTile.capturedAt!,
+          lastRefreshedAt: capturedTile.lastRefreshedAt!,
+          protectedUntil: capturedTile.protectedUntil!,
         );
         await _upsertOwnershipWithMetadata(
           userId: userId,
           hexLower: normalizedHex,
-          capturedAt: capturedTile.capturedAt,
-          lastRefreshedAt: capturedTile.lastRefreshedAt,
-          protectedUntil: capturedTile.protectedUntil,
+          capturedAt: capturedTile.capturedAt!,
+          lastRefreshedAt: capturedTile.lastRefreshedAt!,
+          protectedUntil: capturedTile.protectedUntil!,
         );
         synced = true;
-      } catch (_) {}
+        debugPrint('[Capture] ✅ Supabase sync OK for $normalizedHex');
+      } catch (e) {
+        debugPrint('[Capture] ❌ Supabase sync FAILED for $normalizedHex: $e');
+        // Roll back local state — capture did not persist to shared world.
+        if (!wasAlreadyCaptured) {
+          capturedHexes.remove(normalizedHex);
+          _capturedTilesByHex.remove(normalizedHex);
+        } else if (previousCapturedTile != null) {
+          _capturedTilesByHex[normalizedHex] = previousCapturedTile;
+        }
+        if (previousNearbyTile != null) {
+          _nearbyTilesByHex[normalizedHex] = previousNearbyTile;
+        }
+        if (previousNearbyOwner != null) {
+          nearbyOwnerByHex[normalizedHex] = previousNearbyOwner;
+        }
+      }
+    } else {
+      debugPrint('[Capture] ⚠️ No userId — cannot sync $normalizedHex');
+      // No user = no shared-world persistence. Roll back.
+      if (!wasAlreadyCaptured) {
+        capturedHexes.remove(normalizedHex);
+        _capturedTilesByHex.remove(normalizedHex);
+      } else if (previousCapturedTile != null) {
+        _capturedTilesByHex[normalizedHex] = previousCapturedTile;
+      }
+      if (previousNearbyTile != null) {
+        _nearbyTilesByHex[normalizedHex] = previousNearbyTile;
+      }
+      if (previousNearbyOwner != null) {
+        nearbyOwnerByHex[normalizedHex] = previousNearbyOwner;
+      }
+    }
+
+    // Only persist locally if the capture actually synced.
+    if (synced) {
+      await saveToPrefs();
     }
 
     return CaptureTileResult(
@@ -396,6 +386,52 @@ class CaptureService {
 
     tiles.sort((a, b) => a.h3Index.compareTo(b.h3Index));
     return tiles;
+  }
+
+  /// Fetches ownership for corridor hex IDs from the shared [tile_captures]
+  /// table.  Results are stored separately from the nearby ring so they
+  /// survive [refreshNearbyOwners] clears.
+  Future<void> refreshCorridorOwners(List<String> hexes) async {
+    if (hexes.isEmpty) return;
+
+    _corridorTilesByHex.clear();
+
+    // Batch to stay within Supabase REST URL-length limits.
+    const batchSize = 200;
+    for (var i = 0; i < hexes.length; i += batchSize) {
+      final batch = hexes.sublist(i, math.min(i + batchSize, hexes.length));
+      final rows = await supabaseClient
+          .from('tile_captures')
+          .select('h3_hex, owner_user_id, captured_at, last_refreshed_at, protected_until')
+          .eq('h3_res', h3Resolution)
+          .inFilter('h3_hex', batch) as List<dynamic>?;
+      if (rows == null) continue;
+
+      for (final r in rows) {
+        if (r is Map && r['h3_hex'] is String && r['owner_user_id'] is String) {
+          final hexLower = (r['h3_hex'] as String).toLowerCase();
+          final ownerUserId = r['owner_user_id'] as String;
+          _corridorTilesByHex[hexLower] = _buildNearbyTile(
+            hexLower,
+            ownerUserId,
+            capturedAt: _parseDateTime(r['captured_at']),
+            lastRefreshedAt: _parseDateTime(r['last_refreshed_at']),
+            protectedUntil: _parseDateTime(r['protected_until']),
+          );
+        }
+      }
+    }
+  }
+
+  /// Returns corridor tiles not already covered by [capturedHexes] or
+  /// [nearbyOwnerByHex] (those are already in their respective lists).
+  Future<List<GameTile>> getCorridorTiles() async {
+    return _corridorTilesByHex.entries
+        .where((e) =>
+            !capturedHexes.contains(e.key) &&
+            !nearbyOwnerByHex.containsKey(e.key))
+        .map((e) => e.value)
+        .toList();
   }
 
   Map<String, String> getKnownOwnerByHex() {

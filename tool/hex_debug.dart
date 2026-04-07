@@ -1,4 +1,3 @@
-import 'package:HexTrail/core/constants/seattle_trails.dart';
 import 'package:HexTrail/core/constants/launch_corridor.dart';
 import 'package:HexTrail/core/constants/valid_trail_hexes.dart';
 

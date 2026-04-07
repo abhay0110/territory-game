@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/theme/game_ui_tokens.dart';
 import 'src/presentation/screens/home_screen.dart';
+import 'src/services/notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,6 +17,11 @@ Future<void> main() async {
     anonKey:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvc2NwdWJleGppd2psanFydGd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NTk0NzcsImV4cCI6MjA4ODIzNTQ3N30.nTY3mZehHV2-gSv1huK1LyM1fi1FGC9PnHkoneOoTPg',
   );
+
+  await Firebase.initializeApp();
+
+  // Push notification infrastructure (fire-and-forget, never blocks startup).
+  NotificationService().initialize();
 
   // Edge-to-edge: transparent status & nav bars with light (white) icons.
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(

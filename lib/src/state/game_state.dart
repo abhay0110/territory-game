@@ -16,6 +16,7 @@ class GameState {
   final int sessionTakeovers;
   final double? lastSessionLat;
   final double? lastSessionLng;
+  final DateTime? lastSessionPositionTime;
   final List<String> sessionMilestones;
   final int sessionsStartedCount;
 
@@ -79,6 +80,7 @@ class GameState {
     this.sessionTakeovers = 0,
     this.lastSessionLat,
     this.lastSessionLng,
+    this.lastSessionPositionTime,
     this.sessionMilestones = const [],
     this.sessionsStartedCount = 0,
     this.currentTile = '',
@@ -130,6 +132,7 @@ class GameState {
     int? sessionTakeovers,
     double? lastSessionLat,
     double? lastSessionLng,
+    DateTime? lastSessionPositionTime,
     List<String>? sessionMilestones,
     int? sessionsStartedCount,
     String? currentTile,
@@ -184,6 +187,8 @@ class GameState {
       sessionTakeovers: sessionTakeovers ?? this.sessionTakeovers,
       lastSessionLat: lastSessionLat ?? this.lastSessionLat,
       lastSessionLng: lastSessionLng ?? this.lastSessionLng,
+      lastSessionPositionTime:
+          lastSessionPositionTime ?? this.lastSessionPositionTime,
       sessionMilestones: sessionMilestones ?? this.sessionMilestones,
       sessionsStartedCount:
           sessionsStartedCount ?? this.sessionsStartedCount,

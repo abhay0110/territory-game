@@ -39,6 +39,10 @@ class GuidedTopHud extends StatelessWidget {
   /// leaderboard affordance is rendered in the pill row.
   final VoidCallback? onLeaderboard;
 
+  /// Callback to end the active session. When non-null during active session,
+  /// a visible "End Session" pill is rendered.
+  final VoidCallback? onEndSession;
+
   /// Prefetched rank (1-based) for inline display. Null = not yet loaded.
   final int? leaderboardRank;
 
@@ -65,6 +69,7 @@ class GuidedTopHud extends StatelessWidget {
     required this.modeMenuButton,
     required this.activityMode,
     this.onLeaderboard,
+    this.onEndSession,
     this.leaderboardRank,
     this.leaderboardTiles,
     required this.mineCount,
@@ -84,7 +89,7 @@ class GuidedTopHud extends StatelessWidget {
         child: HudPill(
           label: '🏆',
           value: leaderboardRank != null
-              ? '#$leaderboardRank · $leaderboardTiles tiles'
+              ? '#$leaderboardRank · $leaderboardTiles hexes'
               : 'Leaderboard',
           color: GameUiTokens.accentPrimary,
         ),
@@ -250,6 +255,15 @@ class GuidedTopHud extends StatelessWidget {
                   color: GameUiTokens.textMid,
                 ),
               if (leaderboardPill() != null) leaderboardPill()!,
+              if (sessionActive && onEndSession != null)
+                GestureDetector(
+                  onTap: onEndSession,
+                  child: HudPill(
+                    label: '■',
+                    value: 'End Session',
+                    color: GameUiTokens.danger,
+                  ),
+                ),
             ],
           ),
         ],

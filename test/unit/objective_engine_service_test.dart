@@ -13,14 +13,14 @@ void main() {
 
   // ── Helpers ──────────────────────────────────────────────
 
-  TrailDefinition _trail({String id = 'test_trail', int tiles = 10}) =>
+  TrailDefinition trail({String id = 'test_trail', int tiles = 10}) =>
       TrailDefinition(
         id: id,
         name: 'Test Trail',
         orderedH3Indexes: List.generate(tiles, (i) => 'hex_$i'),
       );
 
-  TrailProgress _trailProgress({
+  TrailProgress trailProgress({
     String trailId = 'test_trail',
     int longestSegment = 0,
     bool isComplete = false,
@@ -28,7 +28,7 @@ void main() {
     TrailNextTileReason? reason,
   }) =>
       TrailProgress(
-        trail: _trail(
+        trail: trail(
           id: trailId,
           tiles: isComplete ? longestSegment : longestSegment + 5,
         ),
@@ -40,7 +40,7 @@ void main() {
         bestNextTileReason: reason,
       );
 
-  TrailSectionDefinition _sectionDef({String name = 'Test Section'}) =>
+  TrailSectionDefinition sectionDef({String name = 'Test Section'}) =>
       TrailSectionDefinition(
         id: 'section_test',
         trailId: 'test_trail',
@@ -51,14 +51,14 @@ void main() {
         orderedH3Indexes: List.generate(10, (i) => 'hex_$i'),
       );
 
-  TrailSectionProgress _sectionProgress({
+  TrailSectionProgress sectionProgress({
     SectionControlState controlState = SectionControlState.unclaimed,
     int tilesToTakeControl = 5,
     String? bestNextTileH3,
     String sectionName = 'Test Section',
   }) =>
       TrailSectionProgress(
-        section: _sectionDef(name: sectionName),
+        section: sectionDef(name: sectionName),
         ownedTiles: 0,
         rivalTiles: 0,
         leadingOwnerId: null,
@@ -195,7 +195,7 @@ void main() {
         protectedUntil: null,
         trailProgress: [],
         sectionProgress: [
-          _sectionProgress(
+          sectionProgress(
             controlState: SectionControlState.you,
             bestNextTileH3: 'hex_a',
           ),
@@ -239,7 +239,7 @@ void main() {
         protectedUntil: null,
         trailProgress: [],
         sectionProgress: [
-          _sectionProgress(
+          sectionProgress(
             controlState: SectionControlState.rival,
             tilesToTakeControl: 1,
             bestNextTileH3: 'hex_b',
@@ -263,7 +263,7 @@ void main() {
         capturedHexesCount: 1,
         protectedUntil: null,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             longestSegment: 3,
             bestNextTileH3: 'hex_b',
             reason: TrailNextTileReason.extendStreak,
@@ -288,7 +288,7 @@ void main() {
         capturedHexesCount: 1,
         protectedUntil: null,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             longestSegment: 3,
             bestNextTileH3: 'hex_b',
             reason: TrailNextTileReason.extendStreak,
@@ -311,14 +311,14 @@ void main() {
         capturedHexesCount: 1,
         protectedUntil: null,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             longestSegment: 3,
             bestNextTileH3: 'hex_b',
             reason: TrailNextTileReason.extendStreak,
           ),
         ],
         sectionProgress: [
-          _sectionProgress(
+          sectionProgress(
             controlState: SectionControlState.rival,
             tilesToTakeControl: 1,
             bestNextTileH3: 'hex_c',
@@ -406,7 +406,7 @@ void main() {
         protectedUntil: null,
         trailProgress: [],
         sectionProgress: [
-          _sectionProgress(
+          sectionProgress(
             controlState: SectionControlState.rival,
             bestNextTileH3: 'hex_rival',
           ),
@@ -453,7 +453,7 @@ void main() {
         protectedUntil: null,
         trailProgress: [],
         sectionProgress: [
-          _sectionProgress(
+          sectionProgress(
             controlState: SectionControlState.rival,
             tilesToTakeControl: 1,
             bestNextTileH3: null, // no target hex
@@ -476,7 +476,7 @@ void main() {
         capturedHexesCount: 1,
         protectedUntil: null,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             longestSegment: 3,
             bestNextTileH3: 'hex_b',
             reason: TrailNextTileReason.bridgeGap, // not extendStreak
@@ -500,7 +500,7 @@ void main() {
         capturedHexesCount: 1,
         protectedUntil: null,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             longestSegment: 10,
             isComplete: true,
             bestNextTileH3: 'hex_b',

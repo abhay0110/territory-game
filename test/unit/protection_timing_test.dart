@@ -5,7 +5,7 @@ import 'package:territory_game/src/presentation/widgets/selected_tile_info_card.
 void main() {
   // ── Helpers ──────────────────────────────────────────────
 
-  GameTile _tile({
+  GameTile tile({
     TileOwnership ownership = TileOwnership.enemy,
     DateTime? protectedUntil,
   }) =>
@@ -21,7 +21,7 @@ void main() {
     test('neutral tile → "Neutral"', () {
       expect(
         SelectedTileInfoCard.statusLabel(
-          _tile(ownership: TileOwnership.neutral),
+          tile(ownership: TileOwnership.neutral),
         ),
         'Neutral',
       );
@@ -30,7 +30,7 @@ void main() {
     test('enemy tile with active protection → "Protected"', () {
       expect(
         SelectedTileInfoCard.statusLabel(
-          _tile(protectedUntil: DateTime.now().add(const Duration(hours: 1))),
+          tile(protectedUntil: DateTime.now().add(const Duration(hours: 1))),
         ),
         'Protected',
       );
@@ -39,7 +39,7 @@ void main() {
     test('enemy tile with expired protection → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.statusLabel(
-          _tile(protectedUntil: DateTime.now().subtract(const Duration(seconds: 1))),
+          tile(protectedUntil: DateTime.now().subtract(const Duration(seconds: 1))),
         ),
         'Capturable now',
       );
@@ -48,7 +48,7 @@ void main() {
     test('enemy tile with null protectedUntil → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.statusLabel(
-          _tile(protectedUntil: null),
+          tile(protectedUntil: null),
         ),
         'Capturable now',
       );
@@ -57,7 +57,7 @@ void main() {
     test('own tile with null protectedUntil → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.statusLabel(
-          _tile(ownership: TileOwnership.mine, protectedUntil: null),
+          tile(ownership: TileOwnership.mine, protectedUntil: null),
         ),
         'Capturable now',
       );
@@ -70,7 +70,7 @@ void main() {
     test('returns "--" when protectedUntil is null', () {
       expect(
         SelectedTileInfoCard.protectionCountdown(
-          _tile(protectedUntil: null),
+          tile(protectedUntil: null),
         ),
         '--',
       );
@@ -79,7 +79,7 @@ void main() {
     test('returns "--" when protection has expired', () {
       expect(
         SelectedTileInfoCard.protectionCountdown(
-          _tile(protectedUntil: DateTime.now().subtract(const Duration(minutes: 5))),
+          tile(protectedUntil: DateTime.now().subtract(const Duration(minutes: 5))),
         ),
         '--',
       );
@@ -88,7 +88,7 @@ void main() {
     test('returns mm:ss format for < 1 hour', () {
       // Protection expiring in ~30 min 15 sec
       final result = SelectedTileInfoCard.protectionCountdown(
-        _tile(
+        tile(
           protectedUntil: DateTime.now().add(const Duration(minutes: 30, seconds: 15)),
         ),
       );
@@ -102,7 +102,7 @@ void main() {
 
     test('returns hh:mm:ss format for >= 1 hour', () {
       final result = SelectedTileInfoCard.protectionCountdown(
-        _tile(
+        tile(
           protectedUntil: DateTime.now().add(const Duration(hours: 2, minutes: 15)),
         ),
       );
@@ -120,7 +120,7 @@ void main() {
     test('neutral tile → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.helperLine(
-          _tile(ownership: TileOwnership.neutral),
+          tile(ownership: TileOwnership.neutral),
         ),
         'Capturable now',
       );
@@ -129,7 +129,7 @@ void main() {
     test('enemy tile with active protection → "Cannot be taken yet"', () {
       expect(
         SelectedTileInfoCard.helperLine(
-          _tile(protectedUntil: DateTime.now().add(const Duration(hours: 1))),
+          tile(protectedUntil: DateTime.now().add(const Duration(hours: 1))),
         ),
         'Cannot be taken yet',
       );
@@ -138,7 +138,7 @@ void main() {
     test('enemy tile with expired protection → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.helperLine(
-          _tile(protectedUntil: DateTime.now().subtract(const Duration(seconds: 1))),
+          tile(protectedUntil: DateTime.now().subtract(const Duration(seconds: 1))),
         ),
         'Capturable now',
       );
@@ -146,7 +146,7 @@ void main() {
 
     test('own tile with active protection → shows remaining time', () {
       final result = SelectedTileInfoCard.helperLine(
-        _tile(
+        tile(
           ownership: TileOwnership.mine,
           protectedUntil: DateTime.now().add(const Duration(minutes: 10)),
         ),
@@ -159,7 +159,7 @@ void main() {
     test('own tile with null protection → "Capturable now"', () {
       expect(
         SelectedTileInfoCard.helperLine(
-          _tile(ownership: TileOwnership.mine, protectedUntil: null),
+          tile(ownership: TileOwnership.mine, protectedUntil: null),
         ),
         'Capturable now',
       );

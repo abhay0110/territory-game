@@ -6,14 +6,14 @@ import 'package:territory_game/src/data/services/milestone_evaluator.dart';
 void main() {
   // ── Helpers ──────────────────────────────────────────────
 
-  TrailDefinition _trail({String id = 'test_trail', int tiles = 10}) =>
+  TrailDefinition trail({String id = 'test_trail', int tiles = 10}) =>
       TrailDefinition(
         id: id,
         name: 'Test Trail',
         orderedH3Indexes: List.generate(tiles, (i) => 'hex_$i'),
       );
 
-  TrailProgress _trailProgress({
+  TrailProgress trailProgress({
     String trailId = 'test_trail',
     int longestSegment = 0,
     int ownedTiles = 0,
@@ -22,7 +22,7 @@ void main() {
   }) {
     final effectiveOwned = isComplete ? totalTiles : ownedTiles;
     return TrailProgress(
-      trail: _trail(id: trailId, tiles: totalTiles),
+      trail: trail(id: trailId, tiles: totalTiles),
       ownedTiles: effectiveOwned,
       longestOwnedSegmentTiles: longestSegment,
       projectedOwnedSegmentTiles: longestSegment,
@@ -30,7 +30,7 @@ void main() {
     );
   }
 
-  TrailSectionDefinition _sectionDef() => TrailSectionDefinition(
+  TrailSectionDefinition sectionDef() => TrailSectionDefinition(
         id: 'section_test',
         trailId: 'test_trail',
         trailName: 'Test Trail',
@@ -40,11 +40,11 @@ void main() {
         orderedH3Indexes: List.generate(10, (i) => 'hex_$i'),
       );
 
-  TrailSectionProgress _section({
+  TrailSectionProgress section({
     SectionControlState controlState = SectionControlState.unclaimed,
   }) =>
       TrailSectionProgress(
-        section: _sectionDef(),
+        section: sectionDef(),
         ownedTiles: 0,
         rivalTiles: 0,
         leadingOwnerId: null,
@@ -112,7 +112,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(longestSegment: 3)],
+        trailProgress: [trailProgress(longestSegment: 3)],
         sectionProgress: [],
       );
 
@@ -124,7 +124,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(longestSegment: 4)],
+        trailProgress: [trailProgress(longestSegment: 4)],
         sectionProgress: [],
       );
 
@@ -136,7 +136,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(longestSegment: 10)],
+        trailProgress: [trailProgress(longestSegment: 10)],
         sectionProgress: [],
       );
 
@@ -149,7 +149,7 @@ void main() {
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             trailId: 'burke_gilman',
             ownedTiles: 3,
             totalTiles: 10,
@@ -167,7 +167,7 @@ void main() {
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
         trailProgress: [
-          _trailProgress(
+          trailProgress(
             trailId: 'burke_gilman',
             ownedTiles: 2,
             totalTiles: 10,
@@ -184,7 +184,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(trailId: 'other_trail')],
+        trailProgress: [trailProgress(trailId: 'other_trail')],
         sectionProgress: [],
       );
 
@@ -196,7 +196,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 0,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(totalTiles: 5, isComplete: true)],
+        trailProgress: [trailProgress(totalTiles: 5, isComplete: true)],
         sectionProgress: [],
       );
 
@@ -210,7 +210,7 @@ void main() {
         hasCapturedTiles: false,
         trailProgress: [],
         sectionProgress: [
-          _section(controlState: SectionControlState.contested),
+          section(controlState: SectionControlState.contested),
         ],
       );
 
@@ -225,7 +225,7 @@ void main() {
         hasCapturedTiles: false,
         trailProgress: [],
         sectionProgress: [
-          _section(controlState: SectionControlState.unclaimed),
+          section(controlState: SectionControlState.unclaimed),
         ],
       );
 
@@ -297,7 +297,7 @@ void main() {
       final checks = MilestoneEvaluator.evaluateAll(
         sessionsStartedCount: 2,
         hasCapturedTiles: true,
-        trailProgress: [_trailProgress(longestSegment: 5)],
+        trailProgress: [trailProgress(longestSegment: 5)],
         sectionProgress: [],
       );
 

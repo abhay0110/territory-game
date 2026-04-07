@@ -275,9 +275,17 @@ class GameStateNotifier extends Notifier<GameState> {
 
   /// Accumulates session distance from the previous session-position to the
   /// given [lat]/[lng]. Only updates when a session is active.
-  void accumulateSessionDistance(double lat, double lng) {
-    if (!state.sessionActive) return;
+  /// Returns `true` if the movement was valid for the current activity mode,
+  /// `false` if it was rejected as too fast (anti-cheat).
+  bool accumulateSessionDistance(
+    double lat,
+    double lng, {
+    required double maxSpeedMetersPerSecond,
+  }) {
+    if (!state.sessionActive) return false;
+    final now = DateTime.now();
     var distDelta = 0.0;
+    var valid = true;
     if (state.lastSessionLat != null && state.lastSessionLng != null) {
       final d = MapRenderService.haversineMeters(
         state.lastSessionLat!,
@@ -285,13 +293,35 @@ class GameStateNotifier extends Notifier<GameState> {
         lat,
         lng,
       );
-      if (d > 0 && d < 300) distDelta = d;
+      if (d > 0 && d < 300) {
+        // Speed check: reject intervals that exceed mode speed limit.
+        final prevTime = state.lastSessionPositionTime;
+        if (prevTime != null) {
+          final dtSeconds = now.difference(prevTime).inMilliseconds / 1000.0;
+          if (dtSeconds > 0.5) {
+            final speed = d / dtSeconds;
+            if (speed > maxSpeedMetersPerSecond) {
+              // Movement too fast — do not count this interval.
+              valid = false;
+              distDelta = 0.0;
+            } else {
+              distDelta = d;
+            }
+          } else {
+            distDelta = d;
+          }
+        } else {
+          distDelta = d;
+        }
+      }
     }
     state = state.copyWith(
       sessionDistanceMeters: state.sessionDistanceMeters + distDelta,
       lastSessionLat: lat,
       lastSessionLng: lng,
+      lastSessionPositionTime: now,
     );
+    return valid;
   }
 
   // ─── Session capture counters ────────────────────────────
@@ -476,6 +506,13 @@ class ActivityModeConfig {
   Duration get autoCaptureTileCooldown => switch (mode) {
     ActivityMode.walkRun => const Duration(seconds: 12),
     ActivityMode.ride    => const Duration(seconds: 8),
+  };
+
+  /// Maximum plausible speed for this mode. Movement above this threshold
+  /// is treated as invalid (e.g. car travel in Walk/Run mode).
+  double get maxSpeedMetersPerSecond => switch (mode) {
+    ActivityMode.walkRun => 4.5,   // ~16 km/h — covers fast running
+    ActivityMode.ride    => 15.0,  // ~54 km/h — covers fast cycling
   };
 
   /// How far to search for recommendation targets.

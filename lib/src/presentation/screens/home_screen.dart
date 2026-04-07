@@ -1,10 +1,14 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/constants/seattle_trail_sections.dart';
 import '../../../core/theme/game_ui_tokens.dart';
+import '../../../models/trail_section.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
@@ -21,6 +25,8 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   static const String _logoAsset = 'assets/images/hextrail_logo.png';
   late final AnimationController _pulseController;
+  int _capturedTileCount = 0;
+  Set<String> _capturedHexes = const {};
 
   @override
   void initState() {
@@ -29,6 +35,22 @@ class _HomeScreenState extends State<HomeScreen>
       vsync: this,
       duration: const Duration(milliseconds: 2600),
     )..repeat();
+    _loadCapturedCount();
+  }
+
+  Future<void> _loadCapturedCount() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('captured_h3_cells_res9_v1');
+    if (raw == null || raw.trim().isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      if (mounted) {
+        setState(() {
+          _capturedTileCount = list.length;
+          _capturedHexes = list.map((e) => e.toString().toLowerCase()).toSet();
+        });
+      }
+    } catch (_) {}
   }
 
   @override
@@ -85,7 +107,10 @@ class _HomeScreenState extends State<HomeScreen>
                         const SizedBox(height: 12),
                         _LeaderboardTeaser(onTap: _enterBattleWithLeaderboard),
                         const SizedBox(height: 12),
-                        const _FirstObjectiveCard(),
+                        _ObjectiveCard(
+                          capturedCount: _capturedTileCount,
+                          capturedHexes: _capturedHexes,
+                        ),
                       ],
                     ),
                   ),
@@ -200,7 +225,7 @@ class _LiveBattleCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Claim tiles by walking or riding the trail',
+            'Claim hexes by walking or riding the trail',
             style: GameUiText.meta(
               color: GameUiTokens.accentPrimary,
               size: 12,
@@ -340,11 +365,96 @@ class _MiniHexBattlefield extends StatelessWidget {
   }
 }
 
-class _FirstObjectiveCard extends StatelessWidget {
-  const _FirstObjectiveCard();
+class _ObjectiveCard extends StatelessWidget {
+  final int capturedCount;
+  final Set<String> capturedHexes;
+
+  const _ObjectiveCard({
+    required this.capturedCount,
+    required this.capturedHexes,
+  });
 
   @override
   Widget build(BuildContext context) {
+    const firstTarget = 3;
+    final firstDone = capturedCount >= firstTarget;
+
+    if (!firstDone) {
+      return _buildCard(
+        tag: '🎯 FIRST OBJECTIVE',
+        tagColor: GameUiTokens.accentPrimary,
+        title: 'Capture 3 hexes',
+        subtitle: 'Unlock your first streak',
+        subtitle2: 'Start earning territory',
+        progress: capturedCount.clamp(0, firstTarget),
+        target: firstTarget,
+      );
+    }
+
+    // Tier 2: Control a section of Burke-Gilman.
+    final bgSections = SeattleTrailSectionDefinitions.sections
+        .where((s) => s.trailId == 'burke_gilman')
+        .toList();
+
+    // Find the section closest to completion (highest %).
+    TrailSectionDefinition? bestSection;
+    int bestOwned = 0;
+    for (final section in bgSections) {
+      final owned = section.orderedH3Indexes
+          .where((h) => capturedHexes.contains(h.toLowerCase()))
+          .length;
+      if (bestSection == null ||
+          owned * bestSection.totalTiles >
+              bestOwned * section.totalTiles) {
+        bestSection = section;
+        bestOwned = owned;
+      }
+    }
+
+    if (bestSection != null && bestOwned >= bestSection.totalTiles) {
+      // Section fully controlled — show completed state.
+      return _buildCard(
+        tag: '✅ SECTION CONTROLLED',
+        tagColor: GameUiTokens.accentSecondary,
+        title: bestSection.name,
+        subtitle: 'You own every hex in this section',
+        progress: bestOwned,
+        target: bestSection.totalTiles,
+      );
+    }
+
+    if (bestSection != null) {
+      final total = bestSection.totalTiles;
+      return _buildCard(
+        tag: '🗺️ NEXT OBJECTIVE',
+        tagColor: GameUiTokens.accentPrimary,
+        title: 'Control ${bestSection.name}',
+        subtitle: 'Capture every hex in this section',
+        progress: bestOwned,
+        target: total,
+      );
+    }
+
+    // Fallback (should not happen with Burke-Gilman sections defined).
+    return _buildCard(
+      tag: '✅ OBJECTIVE COMPLETE',
+      tagColor: GameUiTokens.accentSecondary,
+      title: 'Capture 3 hexes',
+      subtitle: 'Streak unlocked — keep conquering',
+      progress: firstTarget,
+      target: firstTarget,
+    );
+  }
+
+  Widget _buildCard({
+    required String tag,
+    required Color tagColor,
+    required String title,
+    required String subtitle,
+    String? subtitle2,
+    required int progress,
+    required int target,
+  }) {
     return FrostedOverlayCard(
       borderRadius: const BorderRadius.all(Radius.circular(16)),
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -352,9 +462,9 @@ class _FirstObjectiveCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '🎯 FIRST OBJECTIVE',
+            tag,
             style: GameUiText.command(
-              color: GameUiTokens.accentPrimary,
+              color: tagColor,
               size: 12,
               weight: FontWeight.w800,
               letterSpacing: 0.5,
@@ -362,7 +472,7 @@ class _FirstObjectiveCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Capture 3 tiles',
+            title,
             style: GameUiText.body(
               color: GameUiTokens.textHi,
               size: 18,
@@ -371,13 +481,14 @@ class _FirstObjectiveCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Unlock your first streak',
+            subtitle,
             style: GameUiText.meta(color: GameUiTokens.textMid, size: 12),
           ),
-          Text(
-            'Start earning territory',
-            style: GameUiText.meta(color: GameUiTokens.textMid, size: 12),
-          ),
+          if (subtitle2 != null)
+            Text(
+              subtitle2,
+              style: GameUiText.meta(color: GameUiTokens.textMid, size: 12),
+            ),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -385,7 +496,7 @@ class _FirstObjectiveCard extends StatelessWidget {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
-                    value: 0,
+                    value: target > 0 ? progress / target : 0,
                     minHeight: 7,
                     backgroundColor: Colors.white10,
                     valueColor: const AlwaysStoppedAnimation<Color>(
@@ -396,7 +507,7 @@ class _FirstObjectiveCard extends StatelessWidget {
               ),
               const SizedBox(width: 10),
               Text(
-                '0 / 3',
+                '$progress / $target',
                 style: GameUiText.body(
                   color: GameUiTokens.textHi,
                   size: 13,

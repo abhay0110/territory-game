@@ -44,7 +44,7 @@ class SelectedTileInfoCard extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  'Selected tile',
+                  'Selected hex',
                   style: GameUiText.body(
                     color: GameUiTokens.textHi,
                     size: 13,
@@ -149,9 +149,6 @@ class SelectedTileInfoCard extends StatelessWidget {
 
     if (tile.ownership == TileOwnership.enemy) return 'Cannot be taken yet';
 
-    final remaining = until.difference(DateTime.now());
-    final mins = remaining.inMinutes;
-    final secs = remaining.inSeconds.remainder(60);
-    return 'Protected for ${mins}m ${secs.toString().padLeft(2, '0')}s';
+    return 'Your protection: ${protectionCountdown(tile)}';
   }
 }
