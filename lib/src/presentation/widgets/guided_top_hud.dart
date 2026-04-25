@@ -96,6 +96,33 @@ class GuidedTopHud extends StatelessWidget {
       );
     }
 
+    // Trailing widget for the early-return GuidedOverlayCard branches.
+    // When a session is live, surface a visible "End Session" pill alongside
+    // the hamburger so users don't have to dig into the overflow menu.
+    // (Regression introduced when the End Session pill was added only to the
+    // normal-mode Wrap row in commit e91e9bf, missing first-capture /
+    // post-capture / pre-session branches.)
+    Widget trailingForGuidedCard() {
+      if (sessionActive && onEndSession != null) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GestureDetector(
+              onTap: onEndSession,
+              child: HudPill(
+                label: '■',
+                value: 'End',
+                color: GameUiTokens.danger,
+              ),
+            ),
+            const SizedBox(width: 6),
+            modeMenuButton,
+          ],
+        );
+      }
+      return modeMenuButton;
+    }
+
     if (!sessionActive) {
       // When user is far from the active corridor, pre-session copy
       // references the corridor name to orient them.
@@ -110,7 +137,7 @@ class GuidedTopHud extends StatelessWidget {
                     ? 'Ride $direction to $corridorName'
                     : 'Head $direction to $corridorName'),
           subtitle: distLine,
-          trailing: modeMenuButton,
+          trailing: trailingForGuidedCard(),
         );
         final pill = leaderboardPill();
         if (pill == null) return card;
@@ -133,7 +160,7 @@ class GuidedTopHud extends StatelessWidget {
                   : (riding
                         ? '▶ Start session, then ride $direction'
                         : '▶ Start session, then move $direction')),
-        trailing: modeMenuButton,
+        trailing: trailingForGuidedCard(),
       );
       final pill = leaderboardPill();
       if (pill == null) return card;
@@ -159,7 +186,7 @@ class GuidedTopHud extends StatelessWidget {
         subtitle: corridorName != null && corridorDistance != null
             ? '$corridorDistance to the active battlefield'
             : null,
-        trailing: modeMenuButton,
+        trailing: trailingForGuidedCard(),
       );
     }
 
@@ -172,7 +199,7 @@ class GuidedTopHud extends StatelessWidget {
             : (riding
                   ? '🔥 Great capture. Ride $direction to extend your streak'
                   : '🔥 Great capture. Capture $direction to extend your streak'),
-        trailing: modeMenuButton,
+        trailing: trailingForGuidedCard(),
       );
     }
 

@@ -25,11 +25,14 @@ import '../../../features/map/map_controller.dart';
 import '../../../features/map/trail_progress_service.dart';
 import '../../../features/map/trail_section_progress_service.dart';
 import '../../data/services/capture_service.dart';
+import '../../data/services/account_upgrade_service.dart';
 import '../../data/services/location_service.dart';
 import '../../data/services/map_event_log_service.dart';
 import '../../data/services/map_render_service.dart';
+import '../../data/services/player_stats_service.dart';
 import '../widgets/session_share_card.dart';
 import '../../data/services/milestone_evaluator.dart';
+import '../../services/notification_service.dart';
 import '../../data/services/objective_engine_service.dart';
 import '../../data/services/recommendation_scoring_service.dart';
 import '../../data/services/trail_leaderboard_service.dart';
@@ -490,6 +493,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   late final MapController _mapController;
   late final TrailProgressService _trailProgressService;
   late final TrailSectionProgressService _trailSectionProgressService;
+  // Weak-signal grace: tracks whether we already nudged the user about
+  // pending captures, so we only show the calm banner on state changes.
+  bool _weakSignalBannerShown = false;
   final ObjectiveEngineService _objectiveEngine = ObjectiveEngineService();
   final MapEventLogService _eventLog = MapEventLogService();
   List<TrailProgress> _trailProgress = const [];
@@ -544,6 +550,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   double _corridorEntryDistanceMeters = double.infinity;
   bool _showLaunchBanner = false;
   bool _corridorLaneRequested = false;
+
+  // iOS parity: annotation managers must be created AFTER the Mapbox style
+  // is fully loaded, otherwise their layers are attached to the placeholder
+  // style and silently dropped when the real style swaps in.  Tracks whether
+  // the post-style-load setup has run so we don't re-run it on subsequent
+  // styleLoaded events (e.g. style refreshes).
+  bool _mapPostStyleSetupDone = false;
 
   // ── Leaderboard teaser (lightweight prefetch) ──
   int? _leaderboardRank;
@@ -661,6 +674,33 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     });
   }
 
+  /// Surfaces calm HUD messaging for the weak-signal grace model.
+  /// Shows one banner when pending captures appear, and a recovery
+  /// notice when the queue drains.  Final shared ownership is still
+  /// awarded only by the normal synced-capture path.
+  void _syncWeakSignalState() {
+    if (!mounted) return;
+    final hasPending = _captureService.hasPendingCaptures;
+
+    if (hasPending && !_weakSignalBannerShown) {
+      _weakSignalBannerShown = true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Weak signal — holding trail progress'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } else if (!hasPending && _weakSignalBannerShown) {
+      _weakSignalBannerShown = false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Live sync restored'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   void _onMapInteraction() {
     if (!_compactHud && mounted) {
       setState(() {
@@ -695,11 +735,19 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
 
     // Only allow on-trail hexes.
-    // Accept if the hex is in the playable set (ValidTrailHexes) OR the
-    // visual trail corridor (displayHexes).  Both exclude water/blacklisted
-    // hexes.  Off-trail hexes are in neither set → blocked.
-    if (!ValidTrailHexes.isValid(hexLower) &&
-        !LaunchCorridor.displayHexes.contains(hexLower)) {
+    // Capture/selection eligibility is gated strictly on the playable set
+    // (ValidTrailHexes).  The wider visual corridor (displayHexes) is for
+    // rendering the lane only and must not grant capturable territory.
+    //
+    // Exception: any hex that already has a known owner (mine or rival) MUST
+    // remain tappable so the user can view its owner / protection / status
+    // card.  Capture eligibility is still enforced downstream by
+    // `_isHexCapturable`, `protectedByRival`, etc. — this gate only controls
+    // selection/info display.
+    final knownOwnedTile = _captureService.getTileByHex(hexLower);
+    final hasKnownOwner = knownOwnedTile != null &&
+        knownOwnedTile.ownership != TileOwnership.neutral;
+    if (!ValidTrailHexes.isValid(hexLower) && !hasKnownOwner) {
       _dismissSelection();
       return;
     }
@@ -710,7 +758,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final tile = _visibleTiles
             .where((t) => t.h3Index.toLowerCase() == hexLower)
             .firstOrNull ??
-        _captureService.getTileByHex(hexLower) ??
+        knownOwnedTile ??
         GameTile(h3Index: hexLower, ownership: TileOwnership.neutral);
 
     ref.read(gameStateProvider.notifier).selectTile(tile, hexLower);
@@ -1046,6 +1094,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       duration: const Duration(milliseconds: 2100),
     );
     unawaited(
+      NotificationService().requestPermissionAndStore(),
+    );
+    unawaited(
       _syncRecommendedTileGlow(currentLat: _lastLat, currentLng: _lastLng),
     );
     _postCaptureHintTimer?.cancel();
@@ -1126,9 +1177,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           .read(gameStateProvider)
           .showPreviewEnemyTiles,
       trailOnlyRendering: !_isFarFromCorridor,
-      corridorHexes: LaunchCorridor.hexes.toList(),
+      corridorHexes: LaunchCorridor.displayHexes.toList(),
     );
     _applyRefreshResult(result, currentLat: lat, currentLng: lng);
+    _syncWeakSignalState();
 
     // Only attempt auto-capture when movement is valid for the current mode.
     // This prevents car-speed movement in Walk/Run from awarding tiles.
@@ -1244,7 +1296,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           .read(gameStateProvider)
           .showPreviewEnemyTiles,
       trailOnlyRendering: !_isFarFromCorridor,
-      corridorHexes: LaunchCorridor.hexes.toList(),
+      corridorHexes: LaunchCorridor.displayHexes.toList(),
     );
 
     final result = flowResult.captureAttempt;
@@ -1300,9 +1352,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       // Allow retry on next dwell cycle.
       _lastSessionCaptureAttemptHex = null;
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Capture failed to sync — will retry')));
+      // Weak-signal grace: capture_service has queued this attempt for
+      // replay on reconnect.  Keep the message calm.
+      _syncWeakSignalState();
       return;
     }
 
@@ -1964,6 +2016,86 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     await showTrailLeaderboardSheet(context, service: service);
     // Refresh teaser after the user closes the sheet (data may have changed).
     unawaited(_prefetchLeaderboardTeaser());
+  }
+
+  /// HIDDEN beta capability — debug-only entry to upgrade the current
+  /// anonymous account to a permanent email-backed account WITHOUT changing
+  /// the underlying `auth.users.id`.  Intentionally NOT exposed in the
+  /// visible Guided/Pro flow.  Reachable today only via the kDebugMode-gated
+  /// "Save progress (debug)…" item in the More-actions popup so we can
+  /// validate the path internally before unhiding it.
+  ///
+  /// Safe failure: a failed upgrade leaves the existing anonymous session
+  /// fully intact — no sign-out, no destructive cleanup.
+  Future<void> _showHiddenAccountUpgradeDialog() async {
+    final upgradeService = AccountUpgradeService(
+      client: _captureService.supabaseClient,
+    );
+    if (!upgradeService.isAnonymous) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Account is already linked to a permanent identity.'),
+        ),
+      );
+      return;
+    }
+
+    final emailController = TextEditingController();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Save progress (debug)'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Hidden beta capability. Sends a confirmation email that '
+                'links this anonymous account to a permanent email login. '
+                'Captured hexes and stats are preserved.',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailController,
+                autofocus: true,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  hintText: 'you@example.com',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(emailController.text),
+              child: const Text('Send link'),
+            ),
+          ],
+        );
+      },
+    );
+    emailController.dispose();
+    if (result == null) return;
+
+    final error = await upgradeService.requestEmailUpgrade(result);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null
+              ? 'Confirmation email sent. Tap the link to finish linking.'
+              : 'Upgrade failed: $error',
+        ),
+      ),
+    );
   }
 
   /// Lightweight background fetch for the leaderboard rank/tile teaser.
@@ -3047,7 +3179,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           .read(gameStateProvider)
           .showPreviewEnemyTiles,
       trailOnlyRendering: !_isFarFromCorridor,
-      corridorHexes: LaunchCorridor.hexes.toList(),
+      corridorHexes: LaunchCorridor.displayHexes.toList(),
     );
     final result = flowResult.captureAttempt;
 
@@ -3137,6 +3269,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       final takeovers = gs.sessionTakeovers;
       final distance = gs.sessionDistanceMeters;
       final mode = gs.sessionActivityMode;
+      final startedAt = gs.sessionStartedAt;
 
       ref.read(gameStateProvider.notifier).stopSession();
       _selectedActivityMode = ActivityMode.walkRun;
@@ -3144,6 +3277,23 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       _enteredPendingTileAt = null;
       _stopLeaderboardRefreshTimer();
       setState(() {});
+
+      // Persist session distance into lifetime totals.
+      unawaited(PlayerStatsService.accumulateSessionDistance(
+        distanceMeters: distance,
+        isRide: mode == ActivityMode.ride,
+      ));
+
+      // Persist session summary for stats history.
+      final durationSec = startedAt != null
+          ? DateTime.now().difference(startedAt).inSeconds
+          : 0;
+      unawaited(PlayerStatsService.saveSessionSummary(
+        captures: captured,
+        distanceMeters: distance,
+        durationSeconds: durationSec,
+        mode: mode == ActivityMode.ride ? 'ride' : 'walk_run',
+      ));
 
       await _saveSessionState();
       _eventLog.log(
@@ -3507,6 +3657,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                                 !_showRecommendationDebug;
                           });
                           break;
+                        case 'debug_upgrade_account':
+                          unawaited(_showHiddenAccountUpgradeDialog());
+                          break;
                       }
                     },
                     itemBuilder: (context) => [
@@ -3554,6 +3707,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                           value: 'debug_reco',
                           checked: _showRecommendationDebug,
                           child: const Text('Debug recommendation scoring'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'debug_upgrade_account',
+                          child: Text('Save progress (debug)…'),
                         ),
                       ],
                     ],
@@ -3740,10 +3897,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             ),
             onMapCreated: (mapboxMap) async {
               _map = mapboxMap;
-              await _mapRenderService.attachMap(mapboxMap);
 
               // Enable the native location puck so the user's live position
-              // is visible on the map as a blue dot.
+              // is visible on the map as a blue dot.  Safe to call before
+              // style load — the puck is a native overlay, not a style layer.
               await mapboxMap.location.updateSettings(
                 mb.LocationComponentSettings(
                   enabled: true,
@@ -3752,6 +3909,20 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   puckBearing: mb.PuckBearing.HEADING,
                 ),
               );
+            },
+            onStyleLoadedListener: (_) async {
+              // iOS parity fix: PolygonAnnotationManagers MUST be created
+              // after the style has loaded.  On Android they queue against
+              // the eventual style, but on iOS (mapbox_maps_flutter ≤2.19)
+              // they bind to the placeholder style and their layers are
+              // silently dropped when the real style swaps in — which is
+              // why captured/enemy and recommendation/glow polygons did not
+              // render on iPhone while corridor/current sometimes did.
+              final map = _map;
+              if (map == null || _mapPostStyleSetupDone) return;
+              _mapPostStyleSetupDone = true;
+
+              await _mapRenderService.attachMap(map);
 
               // Defer provider-mutating work so it does not run while the
               // widget tree is still building (Riverpod guard).
@@ -3920,7 +4091,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 180),
                 opacity: _bottomHudVisible ? 1 : 0,
-                child: firstCaptureGuidedMode
+                // First-capture guided mode normally hides the card to keep
+                // the screen focused on the "move to glowing tile" prompt.
+                // Exception: if the tapped tile is OWNED (mine or rival),
+                // always show the info card — owner / protection state is
+                // information the user explicitly requested via tap.
+                child: (firstCaptureGuidedMode &&
+                        gs.selectedTile!.ownership == TileOwnership.neutral)
                     ? const SizedBox.shrink()
                     : SelectedTileInfoCard(
                         tile: gs.selectedTile!,
@@ -3937,7 +4114,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             Positioned(
               left: 16,
               right: 16,
-              bottom: bottomInset + (compactHud ? 180 : 210),
+              // Fixed bottom offset — do NOT couple to `compactHud`, which
+              // toggles every ~2s on idle and made the banner visibly jump
+              // 30px (perceived as an annoying animation).
+              bottom: bottomInset + 196,
               child: _buildLaunchCorridorBanner(),
             ),
           Positioned(

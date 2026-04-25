@@ -304,6 +304,22 @@ class CaptureService {
         );
         synced = true;
         debugPrint('[Capture] ✅ Supabase sync OK for $normalizedHex');
+
+        // ── Gameplay notifications (fire-and-forget) ──
+        // Trigger 1: notify previous owner their tile was taken.
+        if (previousNearbyOwner != null && previousNearbyOwner != userId) {
+          NotificationService().notifyTileLost(
+            previousOwnerId: previousNearbyOwner,
+            h3Hex: normalizedHex,
+          );
+        }
+        // Trigger 2: schedule "tile vulnerable" local reminder.
+        if (capturedTile.protectedUntil != null) {
+          NotificationService().scheduleVulnerableReminder(
+            h3Hex: normalizedHex,
+            protectedUntil: capturedTile.protectedUntil!,
+          );
+        }
       } catch (e) {
         debugPrint('[Capture] ❌ Supabase sync FAILED for $normalizedHex: $e');
         // Roll back local state — capture did not persist to shared world.
@@ -319,6 +335,16 @@ class CaptureService {
         if (previousNearbyOwner != null) {
           nearbyOwnerByHex[normalizedHex] = previousNearbyOwner;
         }
+        // Weak-signal grace: remember the intent so a brief connectivity
+        // drop does not unfairly discard legitimate on-trail progress.
+        // Truth-first: no local ownership is awarded here — this queue
+        // only replays the same Supabase upsert on the next refresh.
+        _enqueuePending(
+          hexLower: normalizedHex,
+          userId: userId,
+          capturedAt: capturedTile.capturedAt!,
+          previousNearbyOwner: previousNearbyOwner,
+        );
       }
     } else {
       debugPrint('[Capture] ⚠️ No userId — cannot sync $normalizedHex');
@@ -450,6 +476,155 @@ class CaptureService {
 
     return known;
   }
+
+  // ── Weak-signal grace / pending capture queue ───────────────────────────
+  //
+  // Short connectivity drops during a legitimate session should not
+  // discard on-trail progress outright.  When captureTile() fails to sync
+  // we roll back local state (truth-first) but record the intent here.
+  // flushPendingCaptures() re-runs the same Supabase upsert on the next
+  // refresh; only confirmed entries award shared ownership.  Bounded in
+  // size and age so this never becomes a full offline mode.
+
+  static const int _maxPendingCaptures = 5;
+  static const Duration _pendingCaptureTtl = Duration(minutes: 3);
+
+  final List<_PendingCapture> _pendingCaptures = [];
+
+  bool get hasPendingCaptures => _pendingCaptures.isNotEmpty;
+  int get pendingCaptureCount => _pendingCaptures.length;
+
+  void _enqueuePending({
+    required String hexLower,
+    required String userId,
+    required DateTime capturedAt,
+    String? previousNearbyOwner,
+  }) {
+    // De-dupe by hex: latest intent wins.
+    _pendingCaptures.removeWhere((p) => p.hexLower == hexLower);
+    _pendingCaptures.add(_PendingCapture(
+      hexLower: hexLower,
+      userId: userId,
+      capturedAt: capturedAt,
+      previousNearbyOwner: previousNearbyOwner,
+    ));
+    // Drop oldest if over cap.
+    while (_pendingCaptures.length > _maxPendingCaptures) {
+      _pendingCaptures.removeAt(0);
+    }
+    debugPrint(
+      '[Capture] pending queue now ${_pendingCaptures.length} (added $hexLower)',
+    );
+  }
+
+  /// Attempts to re-sync any queued pending captures.  Called opportunistically
+  /// from the refresh cycle.  Returns the number of entries that were
+  /// confirmed (shared-world sync succeeded on this pass).
+  Future<int> flushPendingCaptures() async {
+    if (_pendingCaptures.isEmpty) return 0;
+
+    final userId = currentUserId;
+    if (userId == null) return 0;
+
+    final now = DateTime.now();
+    // Drop expired entries — no long-session backfill.
+    _pendingCaptures.removeWhere(
+      (p) => now.difference(p.capturedAt) > _pendingCaptureTtl,
+    );
+    if (_pendingCaptures.isEmpty) return 0;
+
+    // Replay in original order to preserve event sequence.
+    final snapshot = List<_PendingCapture>.from(_pendingCaptures);
+    var confirmed = 0;
+
+    for (final pending in snapshot) {
+      // Only the signed-in user may flush their own queue entries.
+      if (pending.userId != userId) {
+        _pendingCaptures.remove(pending);
+        continue;
+      }
+
+      final lastRefreshedAt = DateTime.now();
+      final protectedUntil = lastRefreshedAt.add(
+        const Duration(hours: GameRules.tileProtectionHours),
+      );
+
+      try {
+        await _upsertCaptureWithMetadata(
+          userId: userId,
+          hexLower: pending.hexLower,
+          capturedAt: pending.capturedAt,
+          lastRefreshedAt: lastRefreshedAt,
+          protectedUntil: protectedUntil,
+        );
+        await _upsertOwnershipWithMetadata(
+          userId: userId,
+          hexLower: pending.hexLower,
+          capturedAt: pending.capturedAt,
+          lastRefreshedAt: lastRefreshedAt,
+          protectedUntil: protectedUntil,
+        );
+
+        // Shared-world truth landed — only now finalize locally.
+        capturedHexes.add(pending.hexLower);
+        _capturedTilesByHex[pending.hexLower] = _buildOwnedTile(
+          pending.hexLower,
+          capturedAt: pending.capturedAt,
+          lastRefreshedAt: lastRefreshedAt,
+        );
+        _nearbyTilesByHex.remove(pending.hexLower);
+        nearbyOwnerByHex.remove(pending.hexLower);
+
+        _pendingCaptures.remove(pending);
+        confirmed++;
+        debugPrint(
+          '[Capture] ✅ pending capture confirmed for ${pending.hexLower}',
+        );
+
+        // Same notifications as a live capture (fire-and-forget).
+        if (pending.previousNearbyOwner != null &&
+            pending.previousNearbyOwner != userId) {
+          NotificationService().notifyTileLost(
+            previousOwnerId: pending.previousNearbyOwner!,
+            h3Hex: pending.hexLower,
+          );
+        }
+        NotificationService().scheduleVulnerableReminder(
+          h3Hex: pending.hexLower,
+          protectedUntil: protectedUntil,
+        );
+      } catch (e) {
+        // Still offline or server rejected — leave in queue (if within
+        // TTL it'll be retried next cycle).  Stop early to avoid
+        // hammering the network during a bad patch.
+        debugPrint(
+          '[Capture] pending capture retry failed for ${pending.hexLower}: $e',
+        );
+        break;
+      }
+    }
+
+    if (confirmed > 0) {
+      await saveToPrefs();
+    }
+    return confirmed;
+  }
+}
+
+/// In-memory record of a capture attempt whose shared-world sync failed.
+/// Replayed by [CaptureService.flushPendingCaptures] on the next refresh.
+class _PendingCapture {
+  final String hexLower;
+  final String userId;
+  final DateTime capturedAt;
+  final String? previousNearbyOwner;
+
+  const _PendingCapture({
+    required this.hexLower,
+    required this.userId,
+    required this.capturedAt,
+    this.previousNearbyOwner,
+  });
 }
 
 class CaptureTileResult {

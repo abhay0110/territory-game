@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/theme/game_ui_tokens.dart';
@@ -10,29 +13,69 @@ import 'src/presentation/screens/home_screen.dart';
 import 'src/services/notification_service.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // Tracks whether Firebase initialized successfully — gates all Crashlytics calls.
+  var firebaseReady = false;
 
-  await Supabase.initialize(
-    url: 'https://poscpubexjiwjljqrtgy.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvc2NwdWJleGppd2psanFydGd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NTk0NzcsImV4cCI6MjA4ODIzNTQ3N30.nTY3mZehHV2-gSv1huK1LyM1fi1FGC9PnHkoneOoTPg',
-  );
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp();
+    // Supabase init — must complete before app starts using it.
+    try {
+      await Supabase.initialize(
+        url: 'https://poscpubexjiwjljqrtgy.supabase.co',
+        anonKey:
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvc2NwdWJleGppd2psanFydGd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NTk0NzcsImV4cCI6MjA4ODIzNTQ3N30.nTY3mZehHV2-gSv1huK1LyM1fi1FGC9PnHkoneOoTPg',
+      );
+    } catch (e) {
+      debugPrint('Supabase init failed: $e');
+    }
 
-  // Push notification infrastructure (fire-and-forget, never blocks startup).
-  NotificationService().initialize();
+    // Firebase init — only wire Crashlytics if it actually succeeded.
+    try {
+      await Firebase.initializeApp();
+      firebaseReady = true;
+    } catch (e) {
+      debugPrint('Firebase init failed: $e');
+    }
 
-  // Edge-to-edge: transparent status & nav bars with light (white) icons.
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Colors.transparent,
-    systemNavigationBarIconBrightness: Brightness.light,
-  ));
-  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (firebaseReady) {
+      try {
+        FlutterError.onError =
+            FirebaseCrashlytics.instance.recordFlutterFatalError;
+        await FirebaseCrashlytics.instance
+            .setCrashlyticsCollectionEnabled(true);
+      } catch (e) {
+        debugPrint('Crashlytics wiring failed: $e');
+      }
+    }
 
-  runApp(const ProviderScope(child: TerritoryGameApp()));
+    // Edge-to-edge: transparent status & nav bars with light (white) icons.
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+    runApp(const ProviderScope(child: TerritoryGameApp()));
+
+    // Defer notification init until after first frame — must never block startup.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Fire-and-forget. NotificationService.initialize() already swallows errors.
+      unawaited(NotificationService().initialize());
+    });
+  }, (error, stack) {
+    if (firebaseReady) {
+      try {
+        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      } catch (_) {
+        // Swallow — never let error reporting itself crash startup.
+      }
+    } else {
+      debugPrint('Uncaught zone error (Firebase not ready): $error\n$stack');
+    }
+  });
 }
 
 class TerritoryGameApp extends StatelessWidget {

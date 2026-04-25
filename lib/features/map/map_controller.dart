@@ -82,6 +82,17 @@ class MapController {
     bool trailOnlyRendering = false,
     List<String>? corridorHexes,
   }) async {
+    // Weak-signal grace: opportunistically retry any captures that failed
+    // to sync during a brief connectivity drop.  Confirmed entries land
+    // in the shared world before the rest of this refresh reads state.
+    if (captureService.hasPendingCaptures) {
+      try {
+        await captureService.flushPendingCaptures();
+      } catch (_) {
+        // Still offline / still failing — leave queue for next cycle.
+      }
+    }
+
     final currentHex = await captureService.getCurrentHexForPosition(
       latitude,
       longitude,

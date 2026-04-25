@@ -11,6 +11,7 @@ import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/trail_section.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
+import '../widgets/player_stats_sheet.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
 import 'map_screen.dart';
 
@@ -106,6 +107,8 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(height: 12),
                         _LeaderboardTeaser(onTap: _enterBattleWithLeaderboard),
+                        const SizedBox(height: 12),
+                        _StatsTeaser(onTap: () => showPlayerStatsSheet(context)),
                         const SizedBox(height: 12),
                         _ObjectiveCard(
                           capturedCount: _capturedTileCount,
@@ -556,6 +559,57 @@ class _LeaderboardTeaser extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     'See who controls the most territory',
+                    style: GameUiText.meta(
+                      color: GameUiTokens.textMid,
+                      size: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              size: 18,
+              color: GameUiTokens.textMid,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatsTeaser extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _StatsTeaser({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: FrostedOverlayCard(
+        borderRadius: const BorderRadius.all(Radius.circular(14)),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+        child: Row(
+          children: [
+            const Text('📊', style: TextStyle(fontSize: 18)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Your Stats',
+                    style: GameUiText.body(
+                      color: GameUiTokens.accentPrimary,
+                      size: 13,
+                      weight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Hexes, streaks, and personal bests',
                     style: GameUiText.meta(
                       color: GameUiTokens.textMid,
                       size: 11,
