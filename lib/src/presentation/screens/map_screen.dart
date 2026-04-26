@@ -71,9 +71,10 @@ class _SummaryStat {
   final String value;
   final bool hero;
   const _SummaryStat(this.icon, this.label, this.value, {this.hero = false})
-      : emoji = null;
+    : emoji = null;
   const _SummaryStat.emoji(this.emoji, this.label, this.value)
-      : icon = null, hero = false;
+    : icon = null,
+      hero = false;
 }
 
 /// Animated session summary card with entrance fade+scale+slide and staggered
@@ -337,12 +338,11 @@ class _AnimatedSessionSummaryState extends State<_AnimatedSessionSummary>
                                 Expanded(
                                   child: TextButton(
                                     style: TextButton.styleFrom(
-                                      backgroundColor:
-                                          GameUiTokens.bg2.withOpacity(0.60),
+                                      backgroundColor: GameUiTokens.bg2
+                                          .withOpacity(0.60),
                                       foregroundColor: GameUiTokens.textMid,
                                       shape: RoundedRectangleBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(10),
+                                        borderRadius: BorderRadius.circular(10),
                                         side: BorderSide(
                                           color: GameUiTokens.panelBorder
                                               .withOpacity(0.60),
@@ -385,8 +385,7 @@ class _AnimatedSessionSummaryState extends State<_AnimatedSessionSummary>
                                       foregroundColor:
                                           GameUiTokens.accentPrimary,
                                       shape: RoundedRectangleBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(10),
+                                        borderRadius: BorderRadius.circular(10),
                                         side: BorderSide(
                                           color: GameUiTokens.accentPrimary
                                               .withOpacity(0.30),
@@ -578,8 +577,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     _selectedTileTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      final hasSelectedTile =
-          ref.read(gameStateProvider).selectedTile != null;
+      final hasSelectedTile = ref.read(gameStateProvider).selectedTile != null;
       if (!hasSelectedTile && !_sessionActive) return;
       setState(() {});
     });
@@ -745,7 +743,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     // `_isHexCapturable`, `protectedByRival`, etc. — this gate only controls
     // selection/info display.
     final knownOwnedTile = _captureService.getTileByHex(hexLower);
-    final hasKnownOwner = knownOwnedTile != null &&
+    final hasKnownOwner =
+        knownOwnedTile != null &&
         knownOwnedTile.ownership != TileOwnership.neutral;
     if (!ValidTrailHexes.isValid(hexLower) && !hasKnownOwner) {
       _dismissSelection();
@@ -755,7 +754,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     // Look up tile data from the visible set or capture service; for trail
     // hexes beyond the ring-7 disk (visible via corridor lane), fall back to
     // the corridor ownership cache or a neutral placeholder.
-    final tile = _visibleTiles
+    final tile =
+        _visibleTiles
             .where((t) => t.h3Index.toLowerCase() == hexLower)
             .firstOrNull ??
         knownOwnedTile ??
@@ -795,7 +795,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
 
     _showCaptureFeedback(
-      _isRiding ? 'Ride to the glowing tile' : 'Move to the glowing tile',
+      _isRiding ? 'Ride to the glowing hex' : 'Move to the glowing hex',
     );
   }
 
@@ -853,6 +853,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     await _mapRenderService.drawCorridorLane(
       LaunchCorridor.displayHexes.toList(),
     );
+    // Always-on trail guide line — drawn once after the corridor lane so it
+    // visually sits on top of the lane fill but under the hex polygons.
+    final waypoints = SeattleTrailDefinitions.burkeGilmanWaypoints
+        .map((p) => (lat: p.lat, lng: p.lng))
+        .toList(growable: false);
+    await _mapRenderService.drawTrailPolyline(waypoints);
   }
 
   /// Fly camera to frame both user and nearest corridor entry so the user
@@ -924,13 +930,23 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     _refreshFirstSessionGuidanceState();
 
-    // For MVP, always start in pre-session state when the map opens.
-    // The user must explicitly tap "Start Session" to begin gameplay.
-    // This prevents stale persisted sessions from auto-restoring and
-    // making "Enter the Battle" feel like it starts a session.
+    // Resume an active session only if it was started recently. Sessions
+    // older than this cutoff are treated as stale (e.g., a previous app
+    // launch the user never explicitly stopped) and force-stopped so the
+    // map opens in pre-session state. This preserves the original intent
+    // — "Enter the Battle" should not silently restart a stale session —
+    // while allowing back-to-home → re-enter to keep an in-progress walk
+    // alive.
+    const staleSessionCutoff = Duration(hours: 2);
     if (_sessionActive) {
-      ref.read(gameStateProvider.notifier).stopSession();
-      unawaited(_saveSessionState());
+      final startedAt = ref.read(gameStateProvider).sessionStartedAt;
+      final isStale =
+          startedAt == null ||
+          DateTime.now().difference(startedAt) > staleSessionCutoff;
+      if (isStale) {
+        ref.read(gameStateProvider.notifier).stopSession();
+        unawaited(_saveSessionState());
+      }
     }
   }
 
@@ -1059,8 +1075,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       ? 'Session live — Ride to ${LaunchCorridor.activeTrailName}'
                       : 'Session live - Head to ${LaunchCorridor.activeTrailName}')
                 : (_isRiding
-                      ? 'Session live — Ride to the glowing tile'
-                      : 'Session live - Move to the glowing tile'))
+                      ? 'Session live — Ride to the glowing hex'
+                      : 'Session live - Move to the glowing hex'))
           : (_isRiding
                 ? 'Session live — Captures happen as you ride'
                 : 'Session live - Auto-capture on movement'),
@@ -1089,13 +1105,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     _dismissSelection();
     ref.read(gameStateProvider.notifier).onFirstCaptureCompleted();
     _showCaptureFeedback(
-      '+1 TILE SECURED',
+      '+1 HEX SECURED',
       success: true,
       duration: const Duration(milliseconds: 2100),
     );
-    unawaited(
-      NotificationService().requestPermissionAndStore(),
-    );
+    unawaited(NotificationService().requestPermissionAndStore());
     unawaited(
       _syncRecommendedTileGlow(currentLat: _lastLat, currentLng: _lastLng),
     );
@@ -1104,6 +1118,41 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       if (!mounted) return;
       ref.read(gameStateProvider.notifier).clearPostCaptureGuidance();
     });
+  }
+
+  /// Numbered Objective 1 ("Capture 3 hexes") completion handler.
+  ///
+  /// Fires exactly once across the lifetime of the install, gated by
+  /// `objective1CelebrationShown` (persisted to SharedPreferences).
+  /// Marks the flag synchronously *before* showing UI to make the
+  /// guard reentrancy-safe even if multiple captures land in the same
+  /// frame.  The home screen Objective card re-derives from
+  /// `_capturedTileCount` and visually transitions to Objective 2 on
+  /// its next build.
+  void _onObjective1Completed() {
+    final notifier = ref.read(gameStateProvider.notifier);
+    if (ref.read(gameStateProvider).objective1CelebrationShown) return;
+    notifier.markObjective1Celebrated();
+    // Persist the one-shot flag immediately so the celebration cannot
+    // re-fire if the app is killed before the next save trigger.
+    unawaited(_saveSessionState());
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🎯 First objective complete — 3 hexes captured!'),
+      ),
+    );
+  }
+
+  /// Checks whether the lifetime captured-tile count just crossed the
+  /// Objective 1 threshold (3) and fires the one-shot celebration.
+  /// Safe to call after any successful capture path.
+  void _maybeFireObjective1Celebration() {
+    final capturedCount = _captureService.capturedHexes.length;
+    if (capturedCount >= 3 &&
+        !ref.read(gameStateProvider).objective1CelebrationShown) {
+      _onObjective1Completed();
+    }
   }
 
   Future<void> _saveSessionState() async {
@@ -1328,14 +1377,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       }
 
       _updateSessionSummaryCounters(result);
+      _maybeFireObjective1Celebration();
 
       final message = switch (result.status) {
-        CaptureAttemptStatus.takeoverCaptured =>
-          'Auto-capture takeover ✅',
+        CaptureAttemptStatus.takeoverCaptured => 'Auto-capture takeover ✅',
         CaptureAttemptStatus.protectionRefreshed =>
           'Auto-capture refreshed protection ✅',
-        _ =>
-          'Auto-capture success ✅',
+        _ => 'Auto-capture success ✅',
       };
 
       _logCaptureEvent(result, currentHex, auto: true);
@@ -1595,13 +1643,29 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         .toList(growable: false);
     if (withDistance.isEmpty) return const [];
 
+    // Bias glow target selection toward strict polyline-core hexes so the
+    // recommendation visually hugs the trail line.  Capture eligibility
+    // and section/streak math still use the broader ValidTrailHexes set;
+    // this filter only affects which valid hex earns the glow.
+    //
+    // Fallback: if the player is in a stretch where no core hex is in
+    // range (rare — happens at sharp curves where only expansion hexes
+    // are nearby), fall back to the full set so we still recommend
+    // something instead of going silent.
+    final coreOnly = withDistance
+        .where(
+          (entry) => ValidTrailHexes.isCore(entry.tile.h3Index.toLowerCase()),
+        )
+        .toList(growable: false);
+    final candidatePool = coreOnly.isEmpty ? withDistance : coreOnly;
+
     final streakTargetHexes = _trailProgress
         .where((p) => p.bestNextTileReason == TrailNextTileReason.extendStreak)
         .map((p) => p.bestNextTileH3?.toLowerCase())
         .whereType<String>()
         .toSet();
 
-    final scored = withDistance
+    final scored = candidatePool
         .map(
           (entry) => _scoreRecommendationCandidate(
             entry.tile,
@@ -1674,16 +1738,35 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   String? _guidedPriorityTargetHex({double? lat, double? lng}) {
     final guidedMode = _resolveHudPersonality() == HudPersonality.guided;
+    final preSession = !_sessionActive && !_isGuidedFirstCaptureMode;
+
     // Allow target resolution in Guided mode pre-session so copy and glow align.
-    if (!_sessionActive && !_isGuidedFirstCaptureMode && !guidedMode) {
+    if (preSession && !guidedMode) {
+      return null;
+    }
+
+    // Pre-session lock: glow ONLY the corridor entry (or nothing).
+    //
+    // Without this guard, driving alongside the trail before starting a
+    // session caused the glow to hop across nearby valid trail hexes —
+    // looking like onboarding had already begun and pulling the user's
+    // attention to random hexes they were merely passing.  Pre-session,
+    // the only legitimate target is the launch corridor.
+    if (preSession) {
+      if (_corridorEntryHex != null && _isHexCapturable(_corridorEntryHex!)) {
+        return _corridorEntryHex;
+      }
       return null;
     }
 
     // When the user is far from the active corridor, constrain
     // recommendations to the corridor entry hex — do NOT fall through to
     // normal local tile recommendations.  This holds even after session start.
+    // Only point at the corridor entry if it's still capturable (otherwise
+    // we'd glow a hex the user already owns / a protected enemy hex).
     if (_isFarFromCorridor && guidedMode && _corridorEntryHex != null) {
-      return _corridorEntryHex;
+      if (_isHexCapturable(_corridorEntryHex!)) return _corridorEntryHex;
+      return null;
     }
 
     final reco = _bestRecommendedCapturableTile(
@@ -1693,9 +1776,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (reco != null) return reco;
 
     // Fallback: when no nearby capturable tiles, guide the user toward the
-    // nearest hex on the active launch corridor.
-    if (guidedMode && _corridorEntryHex != null) return _corridorEntryHex;
+    // active launch corridor entry — but only if it's still capturable.
+    if (guidedMode &&
+        _corridorEntryHex != null &&
+        _isHexCapturable(_corridorEntryHex!)) {
+      return _corridorEntryHex;
+    }
     return null;
+  }
+
+  /// True when [hex] is unknown to us (treat as neutral) or known and
+  /// `_isTileCapturable` returns true. Used to keep recommendation fallbacks
+  /// from glowing hexes the user already owns or that are still protected.
+  bool _isHexCapturable(String hex) {
+    final lower = hex.toLowerCase();
+    final tile = _visibleTiles
+        .where((t) => t.h3Index.toLowerCase() == lower)
+        .firstOrNull;
+    if (tile == null) return true;
+    return _isTileCapturable(tile);
   }
 
   Future<void> _clearRecommendedTileGlow() async {
@@ -1926,9 +2025,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       case 'first_tile':
         final next = _bestRecommendedCapturableTile();
         if (next != null) {
-          return 'Momentum: Capture the next nearby tile to build your streak.';
+          return 'Momentum: Capture the next nearby hex to build your streak.';
         }
-        return 'Momentum: Move to the next visible tile and keep expanding.';
+        return 'Momentum: Move to the next visible hex and keep expanding.';
       case 'streak_3':
         final extend = _trailProgress
             .where(
@@ -1939,9 +2038,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             .cast<TrailProgress?>()
             .firstWhere((_) => true, orElse: () => null);
         if (extend != null) {
-          return 'Momentum: Push the next ${extend.trail.name} tile to keep the streak climbing.';
+          return 'Momentum: Push the next ${extend.trail.name} hex to keep the streak climbing.';
         }
-        return 'Momentum: Keep your streak alive with the next open tile.';
+        return 'Momentum: Keep your streak alive with the next open hex.';
       case 'first_section_contested':
         final contested = _sectionProgress
             .where((s) => s.controlState == SectionControlState.contested)
@@ -1991,7 +2090,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (remaining.isNegative || remaining.inSeconds <= 0) {
       return tile.ownership == TileOwnership.mine
           ? 'Your protection expired'
-          : 'Rival tile is capturable';
+          : 'Rival hex is capturable';
     }
     return 'Protected for ${_formatDuration(remaining)}';
   }
@@ -2223,7 +2322,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (takeControl.isNotEmpty) {
       final sec = takeControl.first;
       final plural = sec.tilesToTakeControl == 1 ? '' : 's';
-      return '${sec.section.name}: ${sec.tilesToTakeControl} tile$plural to take control';
+      return '${sec.section.name}: ${sec.tilesToTakeControl} hex$plural to take control';
     }
 
     final atRisk = _sectionProgress.where((s) => s.isAtRisk).toList();
@@ -2320,10 +2419,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           );
 
     if (_captureService.capturedHexes.isEmpty) {
-      return 'Capture your first tile';
+      return 'Capture your first hex';
     }
     if (objectiveCandidates.isEmpty) {
-      return 'Push toward the next trail tile';
+      return 'Push toward the next trail hex';
     }
     final next = objectiveCandidates.first;
     final dist = next.bestNextTileDistanceMeters == null
@@ -2335,7 +2434,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         'Extend your streak to ${next.projectedOwnedSegmentTiles}',
       TrailNextTileReason.bridgeGap => 'Close the gap to strengthen your route',
       TrailNextTileReason.startTrail => 'Start a new trail segment',
-      TrailNextTileReason.nearestMissing => 'Push to the next missing tile',
+      TrailNextTileReason.nearestMissing => 'Push to the next missing hex',
       null => 'Push north to grow your territory',
     };
 
@@ -2388,15 +2487,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final trail = trailTarget.isEmpty ? null : trailTarget.first;
 
     final directionLead = direction == null
-        ? (_isRiding ? 'Ride to the glowing tile' : 'Move to the glowing tile')
+        ? (_isRiding ? 'Ride to the glowing hex' : 'Move to the glowing hex')
         : (_isRiding ? 'Ride $direction' : 'Head $direction');
 
     if (signals.canFlip ||
         (section != null && section.tilesToTakeControl <= 1)) {
       return (
-        title: 'One more tile contests this section',
+        title: 'One more hex contests this section',
         detail: direction == null
-            ? 'Pressure ${section?.section.name ?? 'the rival section'} on the glowing tile'
+            ? 'Pressure ${section?.section.name ?? 'the rival section'} on the glowing hex'
             : (_isRiding
                   ? 'Ride $direction to pressure ${section?.section.name ?? 'the rival section'}'
                   : 'Move $direction to pressure ${section?.section.name ?? 'the rival section'}'),
@@ -2421,8 +2520,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       return (
         title: direction == null
             ? (_isRiding
-                  ? 'Ride to the glowing tile'
-                  : 'Move to the glowing tile')
+                  ? 'Ride to the glowing hex'
+                  : 'Move to the glowing hex')
             : (_isRiding
                   ? 'Ride $direction to extend your streak'
                   : 'Head $direction to extend your streak'),
@@ -2437,7 +2536,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       return (
         title: 'Close the route gap',
         detail: direction == null
-            ? 'The glowing tile reconnects your route'
+            ? 'The glowing hex reconnects your route'
             : '$directionLead to reconnect your route',
         cta: _isRiding ? 'Ride to Target' : 'Move to Target',
       );
@@ -2445,9 +2544,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     return (
       title: direction == null
-          ? (_isRiding
-                ? 'Ride to the glowing tile'
-                : 'Move to the glowing tile')
+          ? (_isRiding ? 'Ride to the glowing hex' : 'Move to the glowing hex')
           : '$directionLead to target',
       detail:
           ref.read(gameStateProvider).currentObjective.detail ??
@@ -2483,8 +2580,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     : '🎯 Session live — move to the trail')
               : direction == null
               ? (riding
-                    ? '🎯 Session live — ride to the glowing tile'
-                    : '🎯 Session live — move to the glowing tile')
+                    ? '🎯 Session live — ride to the glowing hex'
+                    : '🎯 Session live — move to the glowing hex')
               : (riding
                     ? '🎯 Session live — ride $direction to the glow'
                     : '🎯 Session live — move $direction to the glow'))
@@ -2495,8 +2592,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         ? (corridorEntry
               ? 'Auto-capture activates near the trail'
               : (riding
-                    ? 'Auto-capture activates as you ride through target tiles'
-                    : 'Auto-capture activates while you move through target tiles'))
+                    ? 'Auto-capture activates as you ride through target hexes'
+                    : 'Auto-capture activates while you move through target hexes'))
         : isFirstCapture
         ? (riding
               ? 'Tracking is active. Keep riding to trigger your first capture'
@@ -2544,9 +2641,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               ? '▶ Tap Start to begin capturing'
               : guidedTargetHex != null
               ? (riding
-                    ? '▶ Start session, then ride to the glowing tile'
-                    : '▶ Start session, then move to the glowing tile')
-              : '▶ Start session to begin capturing tiles')
+                    ? '▶ Start session, then ride to the glowing hex'
+                    : '▶ Start session, then move to the glowing hex')
+              : '▶ Start session to begin capturing hexes')
         : isFirstCapture
         ? (corridorEntry
               ? (riding
@@ -2554,8 +2651,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     : '🎯 Session live — move to the trail')
               : direction == null
               ? (riding
-                    ? '🎯 Session live — ride to the glowing tile'
-                    : '🎯 Session live — move to the glowing tile')
+                    ? '🎯 Session live — ride to the glowing hex'
+                    : '🎯 Session live — move to the glowing hex')
               : (riding
                     ? '🎯 Session live — ride $direction to the glow'
                     : '🎯 Session live — move $direction to the glow'))
@@ -2640,10 +2737,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   ? 'Ride to ${LaunchCorridor.activeTrailName}'
                   : 'Head to ${LaunchCorridor.activeTrailName}')
             : direction == null
-            ? (riding ? 'Ride to the glowing tile' : 'Move to the glowing tile')
+            ? (riding ? 'Ride to the glowing hex' : 'Move to the glowing hex')
             : (riding
-                  ? 'Ride $direction to the glowing tile'
-                  : 'Move $direction to the glowing tile');
+                  ? 'Ride $direction to the glowing hex'
+                  : 'Move $direction to the glowing hex');
         await HapticFeedback.selectionClick();
         _showCaptureFeedback(hint);
         return;
@@ -2844,6 +2941,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         );
       case CaptureAttemptStatus.lowAccuracy:
       case CaptureAttemptStatus.tooFarFromCenter:
+      case CaptureAttemptStatus.offTrail:
         break;
     }
   }
@@ -2998,7 +3096,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 distanceText: distanceText,
                 timeText: timeText,
                 takeovers: _sessionTakeovers,
-                trailName: primaryTrail != null ? '${primaryTrail.trail.name} Trail' : null,
+                trailName: primaryTrail != null
+                    ? '${primaryTrail.trail.name} Trail'
+                    : null,
                 trailPercent: primaryTrail?.completionPercent,
                 leaderboardRank: _leaderboardRank,
                 totalPlayers: _leaderboardTotalPlayers,
@@ -3156,8 +3256,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       SnackBar(
         content: Text(
           crossedMultiple
-              ? 'Movement test passed ✅ (${uniqueHexes.length} unique tiles)'
-              : 'Movement test failed ❌ (stayed on one tile)',
+              ? 'Movement test passed ✅ (${uniqueHexes.length} unique hexes)'
+              : 'Movement test failed ❌ (stayed on one hex)',
         ),
       ),
     );
@@ -3192,12 +3292,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       final message = switch (result.status) {
         CaptureAttemptStatus.protectedByRival =>
           result.protectedUntil == null
-              ? 'Tile is protected by current owner.'
-              : 'Tile is protected for ${_formatDuration(result.protectedUntil!.difference(DateTime.now()))}',
+              ? 'Hex is protected by current owner.'
+              : 'Hex is protected for ${_formatDuration(result.protectedUntil!.difference(DateTime.now()))}',
         CaptureAttemptStatus.lowAccuracy =>
           'GPS accuracy too low for capture. Need ≤ ${MapController.maxAllowedAccuracyMeters.toInt()}m.',
         CaptureAttemptStatus.tooFarFromCenter =>
-          'Move closer to tile center to capture. Distance: ${result.distanceToCenter?.toStringAsFixed(0) ?? '--'}m / ${MapController.maxCaptureDistanceMeters.toInt()}m allowed.',
+          'Move closer to hex center to capture. Distance: ${result.distanceToCenter?.toStringAsFixed(0) ?? '--'}m / ${MapController.maxCaptureDistanceMeters.toInt()}m allowed.',
+        CaptureAttemptStatus.offTrail =>
+          'You’re off the Burke-Gilman Trail. Move onto the trail to capture.',
         CaptureAttemptStatus.takeoverCaptured => '',
         CaptureAttemptStatus.protectionRefreshed => '',
         CaptureAttemptStatus.captured => '',
@@ -3214,9 +3316,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       debugPrint('[ManualCapture] ⚠️ didCapture but NOT synced for $cellHex');
       _logCaptureEvent(result, cellHex, auto: false);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Capture failed to sync — try again')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Capture failed to sync — try again')),
+      );
       _updateCurrentObjective();
       return;
     }
@@ -3243,15 +3345,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     _updateSessionSummaryCounters(result);
     _logCaptureEvent(result, cellHex, auto: false);
+    _maybeFireObjective1Celebration();
 
     if (!mounted) return;
     final successMessage = switch (result.status) {
-      CaptureAttemptStatus.takeoverCaptured =>
-        'Takeover captured ✅',
-      CaptureAttemptStatus.protectionRefreshed =>
-        'Protection refreshed ✅',
-      _ =>
-        'Tile captured ✅',
+      CaptureAttemptStatus.takeoverCaptured => 'Takeover captured ✅',
+      CaptureAttemptStatus.protectionRefreshed => 'Protection refreshed ✅',
+      _ => 'Hex captured ✅',
     };
 
     ScaffoldMessenger.of(
@@ -3279,21 +3379,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       setState(() {});
 
       // Persist session distance into lifetime totals.
-      unawaited(PlayerStatsService.accumulateSessionDistance(
-        distanceMeters: distance,
-        isRide: mode == ActivityMode.ride,
-      ));
+      unawaited(
+        PlayerStatsService.accumulateSessionDistance(
+          distanceMeters: distance,
+          isRide: mode == ActivityMode.ride,
+        ),
+      );
 
       // Persist session summary for stats history.
       final durationSec = startedAt != null
           ? DateTime.now().difference(startedAt).inSeconds
           : 0;
-      unawaited(PlayerStatsService.saveSessionSummary(
-        captures: captured,
-        distanceMeters: distance,
-        durationSeconds: durationSec,
-        mode: mode == ActivityMode.ride ? 'ride' : 'walk_run',
-      ));
+      unawaited(
+        PlayerStatsService.saveSessionSummary(
+          captures: captured,
+          distanceMeters: distance,
+          durationSeconds: durationSec,
+          mode: mode == ActivityMode.ride ? 'ride' : 'walk_run',
+        ),
+      );
 
       await _saveSessionState();
       _eventLog.log(
@@ -3669,7 +3773,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       ),
                       const PopupMenuItem(
                         value: 'test',
-                        child: Text('Test movement across tiles'),
+                        child: Text('Test movement across hexes'),
                       ),
                       const PopupMenuDivider(),
                       CheckedPopupMenuItem(
@@ -3699,7 +3803,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                         checked: ref
                             .read(gameStateProvider)
                             .showPreviewEnemyTiles,
-                        child: const Text('Preview rival tiles'),
+                        child: const Text('Preview rival hexes'),
                       ),
                       if (kDebugMode) ...[
                         const PopupMenuDivider(),
@@ -3885,529 +3989,531 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       ),
       child: Scaffold(
         body: Stack(
-        children: [
-          mb.MapWidget(
-            key: const ValueKey('mapWidget'),
-            styleUri: kMapboxDarkStyleUri,
-            onTapListener: _onMapTap,
-            cameraOptions: mb.CameraOptions(
-              center: mb.Point(coordinates: mb.Position(-122.3321, 47.6062)),
-              zoom: 11.5,
-              pitch: 45,
-            ),
-            onMapCreated: (mapboxMap) async {
-              _map = mapboxMap;
+          children: [
+            mb.MapWidget(
+              key: const ValueKey('mapWidget'),
+              styleUri: kMapboxDarkStyleUri,
+              onTapListener: _onMapTap,
+              cameraOptions: mb.CameraOptions(
+                center: mb.Point(coordinates: mb.Position(-122.3321, 47.6062)),
+                zoom: 11.5,
+                pitch: 45,
+              ),
+              onMapCreated: (mapboxMap) async {
+                _map = mapboxMap;
 
-              // Enable the native location puck so the user's live position
-              // is visible on the map as a blue dot.  Safe to call before
-              // style load — the puck is a native overlay, not a style layer.
-              await mapboxMap.location.updateSettings(
-                mb.LocationComponentSettings(
-                  enabled: true,
-                  pulsingEnabled: true,
-                  puckBearingEnabled: true,
-                  puckBearing: mb.PuckBearing.HEADING,
-                ),
-              );
-            },
-            onStyleLoadedListener: (_) async {
-              // iOS parity fix: PolygonAnnotationManagers MUST be created
-              // after the style has loaded.  On Android they queue against
-              // the eventual style, but on iOS (mapbox_maps_flutter ≤2.19)
-              // they bind to the placeholder style and their layers are
-              // silently dropped when the real style swaps in — which is
-              // why captured/enemy and recommendation/glow polygons did not
-              // render on iPhone while corridor/current sometimes did.
-              final map = _map;
-              if (map == null || _mapPostStyleSetupDone) return;
-              _mapPostStyleSetupDone = true;
-
-              await _mapRenderService.attachMap(map);
-
-              // Defer provider-mutating work so it does not run while the
-              // widget tree is still building (Riverpod guard).
-              WidgetsBinding.instance.addPostFrameCallback((_) async {
-                if (!mounted) return;
-
-                // Draw corridor lane as soon as map is ready.
-                unawaited(_drawCorridorLaneIfNeeded());
-
-                if (_lastLat != null && _lastLng != null) {
-                  await _refreshMapForCoordinates(
-                    _lastLat!,
-                    _lastLng!,
-                    moveCamera: false,
-                    accuracy: _lastAccuracy,
-                  );
-                }
-
-                await _syncRecommendedTileGlow(
-                  currentLat: _lastLat,
-                  currentLng: _lastLng,
-                );
-              });
-            },
-          ),
-          Positioned.fill(
-            child: Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (_) => _onMapInteraction(),
-              onPointerMove: (_) => _onMapInteraction(),
-            ),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.18),
-                      Colors.transparent,
-                      Colors.black.withOpacity(0.13),
-                    ],
-                    stops: const [0.0, 0.33, 1.0],
+                // Enable the native location puck so the user's live position
+                // is visible on the map as a blue dot.  Safe to call before
+                // style load — the puck is a native overlay, not a style layer.
+                await mapboxMap.location.updateSettings(
+                  mb.LocationComponentSettings(
+                    enabled: true,
+                    pulsingEnabled: true,
+                    puckBearingEnabled: true,
+                    puckBearing: mb.PuckBearing.HEADING,
                   ),
-                ),
+                );
+              },
+              onStyleLoadedListener: (_) async {
+                // iOS parity fix: PolygonAnnotationManagers MUST be created
+                // after the style has loaded.  On Android they queue against
+                // the eventual style, but on iOS (mapbox_maps_flutter ≤2.19)
+                // they bind to the placeholder style and their layers are
+                // silently dropped when the real style swaps in — which is
+                // why captured/enemy and recommendation/glow polygons did not
+                // render on iPhone while corridor/current sometimes did.
+                final map = _map;
+                if (map == null || _mapPostStyleSetupDone) return;
+                _mapPostStyleSetupDone = true;
+
+                await _mapRenderService.attachMap(map);
+
+                // Defer provider-mutating work so it does not run while the
+                // widget tree is still building (Riverpod guard).
+                WidgetsBinding.instance.addPostFrameCallback((_) async {
+                  if (!mounted) return;
+
+                  // Draw corridor lane as soon as map is ready.
+                  unawaited(_drawCorridorLaneIfNeeded());
+
+                  if (_lastLat != null && _lastLng != null) {
+                    await _refreshMapForCoordinates(
+                      _lastLat!,
+                      _lastLng!,
+                      moveCamera: false,
+                      accuracy: _lastAccuracy,
+                    );
+                  }
+
+                  await _syncRecommendedTileGlow(
+                    currentLat: _lastLat,
+                    currentLng: _lastLng,
+                  );
+                });
+              },
+            ),
+            Positioned.fill(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) => _onMapInteraction(),
+                onPointerMove: (_) => _onMapInteraction(),
               ),
             ),
-          ),
-          if (firstCaptureGuidedMode)
             Positioned.fill(
               child: IgnorePointer(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.22),
-                  ),
-                ),
-              ),
-            ),
-          if (!guidedMode)
-            Positioned(
-              left: 12,
-              right: compactHud ? 56 : 72,
-              top: topInset + 8,
-              child: AnimatedSlide(
-                duration: topHudMotionDuration,
-                curve: Curves.easeOutCubic,
-                offset: _legendVisible ? Offset.zero : const Offset(0, -0.18),
-                child: AnimatedOpacity(
-                  duration: topHudMotionDuration,
-                  opacity: _legendVisible ? 1 : 0,
-                  child: _buildPremiumTopHud(
-                    compactHud: compactHud,
-                    muted: proMode,
-                  ),
-                ),
-              ),
-            ),
-          if (!guidedMode)
-            Positioned.fill(
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    right: 12,
-                    top: compactHud ? 120 : 136,
-                    bottom: compactHud ? 120 : 132,
-                  ),
-                  child: AnimatedSlide(
-                    duration: actionRailMotionDuration,
-                    curve: Curves.easeOutCubic,
-                    offset: _actionRailVisible
-                        ? Offset.zero
-                        : const Offset(0.2, 0),
-                    child: AnimatedOpacity(
-                      duration: actionRailMotionDuration,
-                      opacity: _actionRailVisible ? 1 : 0,
-                      child: _buildActionRail(muted: proMode),
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withOpacity(0.18),
+                        Colors.transparent,
+                        Colors.black.withOpacity(0.13),
+                      ],
+                      stops: const [0.0, 0.33, 1.0],
                     ),
                   ),
                 ),
               ),
             ),
-          if (!guidedMode)
-            Positioned(
-              left: 12,
-              top: topInset + (compactHud ? 170 : 208),
-              child: AnimatedSlide(
-                duration: mapLegendMotionDuration,
-                curve: Curves.easeOutCubic,
-                offset: _mapLegendVisible
-                    ? Offset.zero
-                    : const Offset(0, -0.18),
-                child: AnimatedOpacity(
-                  duration: mapLegendMotionDuration,
-                  opacity: _mapLegendVisible && !compactHud ? 1 : 0.78,
-                  child: const MapLegend(),
-                ),
-              ),
-            ),
-          if (kDebugMode && _showRecommendationDebug)
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom:
-                  bottomInset +
-                  (guidedMode
-                      ? (compactHud ? 84 : 98)
-                      : (compactHud ? 90 : 110)),
-              child: IgnorePointer(
-                child: Align(
-                  alignment: Alignment.bottomLeft,
-                  child: _buildRecommendationDebugCard(),
-                ),
-              ),
-            ),
-          if (guidedMode)
-            Positioned(
-              left: 12,
-              right: 12,
-              top: topInset + 8,
-              child: AnimatedSwitcher(
-                duration: guidedSwitchDuration,
-                child: KeyedSubtree(
-                  key: ValueKey(
-                    _isGuidedFirstCaptureMode
-                        ? 'first-capture'
-                        : _showPostCaptureGuidance
-                        ? 'post-capture'
-                        : 'normal',
+            if (firstCaptureGuidedMode)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.22),
+                    ),
                   ),
-                  child: _buildGuidedTopHud(compactHud: compactHud),
                 ),
               ),
-            ),
-          if (gs.selectedTile != null)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom:
-                  bottomInset +
-                  (guidedMode
-                      ? (useGuidedStickyBar ? 100 : 174)
-                      : 188),
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 180),
-                opacity: _bottomHudVisible ? 1 : 0,
-                // First-capture guided mode normally hides the card to keep
-                // the screen focused on the "move to glowing tile" prompt.
-                // Exception: if the tapped tile is OWNED (mine or rival),
-                // always show the info card — owner / protection state is
-                // information the user explicitly requested via tap.
-                child: (firstCaptureGuidedMode &&
-                        gs.selectedTile!.ownership == TileOwnership.neutral)
-                    ? const SizedBox.shrink()
-                    : SelectedTileInfoCard(
-                        tile: gs.selectedTile!,
-                        guidedMode: guidedMode,
-                        compactHud: compactHud,
-                        h3Resolution: h3Resolution,
-                        onDismiss: _dismissSelection,
-                      ),
+            if (!guidedMode)
+              Positioned(
+                left: 12,
+                right: compactHud ? 56 : 72,
+                top: topInset + 8,
+                child: AnimatedSlide(
+                  duration: topHudMotionDuration,
+                  curve: Curves.easeOutCubic,
+                  offset: _legendVisible ? Offset.zero : const Offset(0, -0.18),
+                  child: AnimatedOpacity(
+                    duration: topHudMotionDuration,
+                    opacity: _legendVisible ? 1 : 0,
+                    child: _buildPremiumTopHud(
+                      compactHud: compactHud,
+                      muted: proMode,
+                    ),
+                  ),
+                ),
               ),
-            ),
-          // Launch corridor banner (one-trail-first state)
-          // Suppressed while a tile is selected so the tile card has priority.
-          if (_showLaunchBanner && guidedMode && gs.selectedTile == null)
+            if (!guidedMode)
+              Positioned.fill(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      right: 12,
+                      top: compactHud ? 120 : 136,
+                      bottom: compactHud ? 120 : 132,
+                    ),
+                    child: AnimatedSlide(
+                      duration: actionRailMotionDuration,
+                      curve: Curves.easeOutCubic,
+                      offset: _actionRailVisible
+                          ? Offset.zero
+                          : const Offset(0.2, 0),
+                      child: AnimatedOpacity(
+                        duration: actionRailMotionDuration,
+                        opacity: _actionRailVisible ? 1 : 0,
+                        child: _buildActionRail(muted: proMode),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (!guidedMode)
+              Positioned(
+                left: 12,
+                top: topInset + (compactHud ? 170 : 208),
+                child: AnimatedSlide(
+                  duration: mapLegendMotionDuration,
+                  curve: Curves.easeOutCubic,
+                  offset: _mapLegendVisible
+                      ? Offset.zero
+                      : const Offset(0, -0.18),
+                  child: AnimatedOpacity(
+                    duration: mapLegendMotionDuration,
+                    opacity: _mapLegendVisible && !compactHud ? 1 : 0.78,
+                    child: const MapLegend(),
+                  ),
+                ),
+              ),
+            if (kDebugMode && _showRecommendationDebug)
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom:
+                    bottomInset +
+                    (guidedMode
+                        ? (compactHud ? 84 : 98)
+                        : (compactHud ? 90 : 110)),
+                child: IgnorePointer(
+                  child: Align(
+                    alignment: Alignment.bottomLeft,
+                    child: _buildRecommendationDebugCard(),
+                  ),
+                ),
+              ),
+            if (guidedMode)
+              Positioned(
+                left: 12,
+                right: 12,
+                top: topInset + 8,
+                child: AnimatedSwitcher(
+                  duration: guidedSwitchDuration,
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      _isGuidedFirstCaptureMode
+                          ? 'first-capture'
+                          : _showPostCaptureGuidance
+                          ? 'post-capture'
+                          : 'normal',
+                    ),
+                    child: _buildGuidedTopHud(compactHud: compactHud),
+                  ),
+                ),
+              ),
+            if (gs.selectedTile != null)
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom:
+                    bottomInset +
+                    (guidedMode ? (useGuidedStickyBar ? 100 : 174) : 188),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 180),
+                  opacity: _bottomHudVisible ? 1 : 0,
+                  // An explicit tap is always a request for info — render the
+                  // status card regardless of ownership (neutral / mine / rival)
+                  // and regardless of guided-mode phase.  The glow overlay
+                  // remains the primary navigation prompt; the card is
+                  // supplementary info the user opted into.
+                  child: SelectedTileInfoCard(
+                    tile: gs.selectedTile!,
+                    guidedMode: guidedMode,
+                    compactHud: compactHud,
+                    h3Resolution: h3Resolution,
+                    onDismiss: _dismissSelection,
+                  ),
+                ),
+              ),
+            // Launch corridor banner (one-trail-first state)
+            // Suppressed while a tile is selected so the tile card has priority.
+            if (_showLaunchBanner && guidedMode && gs.selectedTile == null)
+              Positioned(
+                left: 16,
+                right: 16,
+                // Fixed bottom offset — do NOT couple to `compactHud`, which
+                // toggles every ~2s on idle and made the banner visibly jump
+                // 30px (perceived as an annoying animation).
+                bottom: bottomInset + 196,
+                child: _buildLaunchCorridorBanner(),
+              ),
             Positioned(
               left: 16,
               right: 16,
-              // Fixed bottom offset — do NOT couple to `compactHud`, which
-              // toggles every ~2s on idle and made the banner visibly jump
-              // 30px (perceived as an annoying animation).
-              bottom: bottomInset + 196,
-              child: _buildLaunchCorridorBanner(),
-            ),
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: bottomInset + 16,
-            child: AnimatedSlide(
-              duration: bottomSlideDuration,
-              curve: Curves.easeOutCubic,
-              offset: _bottomHudVisible ? Offset.zero : const Offset(0, 0.2),
-              child: AnimatedOpacity(
-                duration: bottomFadeDuration,
-                opacity: _bottomHudVisible ? 1 : 0,
-                child: AnimatedScale(
-                  duration: bottomScaleDuration,
-                  scale: _capturePulseActive ? 1.012 : 1,
-                  child: guidedMode
-                      ? (useGuidedStickyBar
-                            ? _buildGuidedStickyCtaBar(compactHud: compactHud)
-                            : _buildGuidedBottomPanel(compactHud: compactHud))
-                      : FrostedOverlayCard(
-                          emphasized: _capturePulseActive,
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: compactHud ? 8 : 12,
-                          ),
-                          child: DefaultTextStyle.merge(
-                            style: const TextStyle(color: Colors.white70),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Wrap(
-                                            spacing: 10,
-                                            runSpacing: 4,
-                                            children: [
-                                              const Text(
-                                                'Location',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
+              bottom: bottomInset + 16,
+              child: AnimatedSlide(
+                duration: bottomSlideDuration,
+                curve: Curves.easeOutCubic,
+                offset: _bottomHudVisible ? Offset.zero : const Offset(0, 0.2),
+                child: AnimatedOpacity(
+                  duration: bottomFadeDuration,
+                  opacity: _bottomHudVisible ? 1 : 0,
+                  child: AnimatedScale(
+                    duration: bottomScaleDuration,
+                    scale: _capturePulseActive ? 1.012 : 1,
+                    child: guidedMode
+                        ? (useGuidedStickyBar
+                              ? _buildGuidedStickyCtaBar(compactHud: compactHud)
+                              : _buildGuidedBottomPanel(compactHud: compactHud))
+                        : FrostedOverlayCard(
+                            emphasized: _capturePulseActive,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: compactHud ? 8 : 12,
+                            ),
+                            child: DefaultTextStyle.merge(
+                              style: const TextStyle(color: Colors.white70),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Wrap(
+                                              spacing: 10,
+                                              runSpacing: 4,
+                                              children: [
+                                                const Text(
+                                                  'Location',
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                _tracking ? 'Tracking' : 'Idle',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: _tracking
-                                                      ? GameColors
-                                                            .statusTracking
-                                                      : Colors.grey,
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  _tracking
+                                                      ? 'Tracking'
+                                                      : 'Idle',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: _tracking
+                                                        ? GameColors
+                                                              .statusTracking
+                                                        : Colors.grey,
+                                                  ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Text(
-                                                _sessionActive
-                                                    ? 'Capturing'
-                                                    : 'Paused',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: _sessionActive
-                                                      ? GameColors
-                                                            .statusSessionOn
-                                                      : Colors.grey,
+                                                const SizedBox(width: 10),
+                                                Text(
+                                                  _sessionActive
+                                                      ? 'Capturing'
+                                                      : 'Paused',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: _sessionActive
+                                                        ? GameColors
+                                                              .statusSessionOn
+                                                        : Colors.grey,
+                                                  ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Text(
-                                                'Mine: ${_captureService.capturedHexes.length}',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
+                                                const SizedBox(width: 10),
+                                                Text(
+                                                  'Mine: ${_captureService.capturedHexes.length}',
+                                                  style: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
                                                 ),
-                                              ),
-                                              Text(
-                                                'Visible: ${_mapRenderService.visibleCapturedHex.length}',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
+                                                Text(
+                                                  'Visible: ${_mapRenderService.visibleCapturedHex.length}',
+                                                  style: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
                                                 ),
-                                              ),
-                                              Text(
-                                                '🏆 ${_unlockedMilestoneIds.length}/$_totalMilestoneCount',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: Colors.white,
+                                                Text(
+                                                  '🏆 ${_unlockedMilestoneIds.length}/$_totalMilestoneCount',
+                                                  style: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: Colors.white,
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(_currentTile),
-                                          const SizedBox(height: 4),
-                                          Row(
-                                            children: [
-                                              AnimatedScale(
-                                                duration: const Duration(
-                                                  milliseconds: 220,
-                                                ),
-                                                scale: _capturePulseActive
-                                                    ? 1.7
-                                                    : 1.0,
-                                                child: AnimatedOpacity(
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(_currentTile),
+                                            const SizedBox(height: 4),
+                                            Row(
+                                              children: [
+                                                AnimatedScale(
                                                   duration: const Duration(
                                                     milliseconds: 220,
                                                   ),
-                                                  opacity: _capturePulseActive
-                                                      ? 0.9
-                                                      : 1,
-                                                  child: Container(
-                                                    width: 10,
-                                                    height: 10,
-                                                    decoration: BoxDecoration(
-                                                      color:
-                                                          _ownershipBadgeColor(
-                                                            _currentGameTile,
-                                                          ),
-                                                      shape: BoxShape.circle,
-                                                      boxShadow:
-                                                          _capturePulseActive
-                                                          ? [
-                                                              BoxShadow(
-                                                                color:
-                                                                    _ownershipBadgeColor(
-                                                                      _currentGameTile,
-                                                                    ).withOpacity(
-                                                                      0.85,
-                                                                    ),
-                                                                blurRadius: 10,
-                                                                spreadRadius: 2,
-                                                              ),
-                                                            ]
-                                                          : null,
+                                                  scale: _capturePulseActive
+                                                      ? 1.7
+                                                      : 1.0,
+                                                  child: AnimatedOpacity(
+                                                    duration: const Duration(
+                                                      milliseconds: 220,
+                                                    ),
+                                                    opacity: _capturePulseActive
+                                                        ? 0.9
+                                                        : 1,
+                                                    child: Container(
+                                                      width: 10,
+                                                      height: 10,
+                                                      decoration: BoxDecoration(
+                                                        color:
+                                                            _ownershipBadgeColor(
+                                                              _currentGameTile,
+                                                            ),
+                                                        shape: BoxShape.circle,
+                                                        boxShadow:
+                                                            _capturePulseActive
+                                                            ? [
+                                                                BoxShadow(
+                                                                  color:
+                                                                      _ownershipBadgeColor(
+                                                                        _currentGameTile,
+                                                                      ).withOpacity(
+                                                                        0.85,
+                                                                      ),
+                                                                  blurRadius:
+                                                                      10,
+                                                                  spreadRadius:
+                                                                      2,
+                                                                ),
+                                                              ]
+                                                            : null,
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  'Owned by ${_ownerLabel(_currentGameTile)} • Captured ${_formatSince(_currentGameTile.capturedAt)}',
-                                                  style: const TextStyle(
-                                                    fontSize: 12,
-                                                    color: Colors.white,
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Text(
+                                                    'Owned by ${_ownerLabel(_currentGameTile)} • Captured ${_formatSince(_currentGameTile.capturedAt)}',
+                                                    style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Colors.white,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                   ),
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
                                                 ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            _protectionLabel(_currentGameTile),
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            '${_captureStatusText()} • Radius ${_visibleRadiusMeters.toInt()}m',
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            _trailProgressInlineText(),
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          if (!compactHud) ...[
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              _nearestTrailHintText(),
-                                              style: const TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
+                                              ],
                                             ),
                                             const SizedBox(height: 2),
                                             Text(
-                                              _nextObjectiveDetailText(),
-                                              style: const TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
+                                              _protectionLabel(
+                                                _currentGameTile,
                                               ),
-                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                             ),
                                             const SizedBox(height: 2),
                                             Text(
-                                              _sectionSummaryText(),
+                                              '${_captureStatusText()} • Radius ${_visibleRadiusMeters.toInt()}m',
                                               style: const TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
+                                                fontSize: 12,
                                               ),
-                                              overflow: TextOverflow.ellipsis,
                                             ),
                                             const SizedBox(height: 2),
                                             Text(
-                                              _sectionObjectiveText(),
+                                              _trailProgressInlineText(),
                                               style: const TextStyle(
                                                 fontSize: 11,
-                                                color: Colors.white70,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              _sectionControlPressureText(),
-                                              style: const TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white,
                                                 fontWeight: FontWeight.w600,
                                               ),
                                               overflow: TextOverflow.ellipsis,
                                             ),
+                                            if (!compactHud) ...[
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _nearestTrailHintText(),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _nextObjectiveDetailText(),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _sectionSummaryText(),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _sectionObjectiveText(),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _sectionControlPressureText(),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                           ],
-                                        ],
-                                      ),
-                                    ),
-                                    IconButton(
-                                      onPressed: _showCurrentTileDetails,
-                                      color: Colors.white,
-                                      icon: const Icon(
-                                        Icons.assistant_navigation,
-                                      ),
-                                      tooltip: 'Tile details',
-                                    ),
-                                    const SizedBox(width: 12),
-                                    AnimatedScale(
-                                      duration: const Duration(
-                                        milliseconds: 220,
-                                      ),
-                                      scale: _capturePulseActive ? 1.06 : 1.0,
-                                      child: FilledButton(
-                                        onPressed: _currentTile.isEmpty
-                                            ? null
-                                            : _captureCurrentTile,
-                                        style: FilledButton.styleFrom(
-                                          backgroundColor: GameColors.neonGreen,
-                                          foregroundColor: Colors.black,
-                                        ),
-                                        child: Text(
-                                          _captured ? 'Captured' : 'Capture',
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                                      IconButton(
+                                        onPressed: _showCurrentTileDetails,
+                                        color: Colors.white,
+                                        icon: const Icon(
+                                          Icons.assistant_navigation,
+                                        ),
+                                        tooltip: 'Hex details',
+                                      ),
+                                      const SizedBox(width: 12),
+                                      AnimatedScale(
+                                        duration: const Duration(
+                                          milliseconds: 220,
+                                        ),
+                                        scale: _capturePulseActive ? 1.06 : 1.0,
+                                        child: FilledButton(
+                                          onPressed: _currentTile.isEmpty
+                                              ? null
+                                              : _captureCurrentTile,
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor:
+                                                GameColors.neonGreen,
+                                            foregroundColor: Colors.black,
+                                          ),
+                                          child: Text(
+                                            _captured ? 'Captured' : 'Capture',
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                ),
-              ),
-            ),
-          ),
-          if (_captureFeedbackText != null)
-            Positioned(
-              left: 0,
-              right: 0,
-              top: topInset + 150,
-              child: IgnorePointer(
-                child: Center(
-                  child: CaptureFeedbackOverlay(
-                    text: _captureFeedbackText!,
-                    success: _captureFeedbackSuccess,
                   ),
                 ),
               ),
             ),
-        ],
+            if (_captureFeedbackText != null)
+              Positioned(
+                left: 0,
+                right: 0,
+                top: topInset + 150,
+                child: IgnorePointer(
+                  child: Center(
+                    child: CaptureFeedbackOverlay(
+                      text: _captureFeedbackText!,
+                      success: _captureFeedbackSuccess,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
-    ),
     );
   }
 }

@@ -18,9 +18,10 @@ Future<bool> showWelcomeDialog(BuildContext context) async {
       return FadeTransition(
         opacity: CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
         child: ScaleTransition(
-          scale: Tween<double>(begin: 0.92, end: 1).animate(
-            CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
-          ),
+          scale: Tween<double>(
+            begin: 0.92,
+            end: 1,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
           child: child,
         ),
       );
@@ -52,10 +53,7 @@ class _WelcomeDialogContent extends StatelessWidget {
                 gradient: const LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [
-                    GameUiTokens.bg1,
-                    GameUiTokens.bg2,
-                  ],
+                  colors: [GameUiTokens.bg1, GameUiTokens.bg2],
                 ),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
@@ -103,12 +101,12 @@ class _WelcomeDialogContent extends StatelessWidget {
                       const SizedBox(height: 20),
                       _infoRow(
                         Icons.directions_walk,
-                        'Walk, run, or bike the Burke-Gilman trail to claim hex tiles.',
+                        'Walk, run, or bike the Burke-Gilman trail to claim hexes.',
                       ),
                       const SizedBox(height: 12),
                       _infoRow(
                         Icons.hexagon_outlined,
-                        'Tiles auto-capture when you enter a glowing hex during a session.',
+                        'Hexes auto-capture when you enter a glowing hex during a session.',
                       ),
                       const SizedBox(height: 12),
                       _infoRow(

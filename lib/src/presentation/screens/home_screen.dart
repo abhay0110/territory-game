@@ -23,7 +23,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const String _logoAsset = 'assets/images/hextrail_logo.png';
   late final AnimationController _pulseController;
   int _capturedTileCount = 0;
@@ -32,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2600),
@@ -39,10 +40,22 @@ class _HomeScreenState extends State<HomeScreen>
     _loadCapturedCount();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadCapturedCount();
+    }
+  }
+
   Future<void> _loadCapturedCount() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('captured_h3_cells_res9_v1');
-    if (raw == null || raw.trim().isEmpty) return;
+    if (raw == null || raw.trim().isEmpty) {
+      // No local cache yet (e.g. captures still pending Supabase sync on a
+      // fresh launch). Keep current count (0 on first run) rather than
+      // overwriting a previously-loaded value.
+      return;
+    }
     try {
       final list = jsonDecode(raw) as List<dynamic>;
       if (mounted) {
@@ -56,14 +69,21 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pulseController.dispose();
     super.dispose();
   }
 
-  void _enterBattle() {
-    Navigator.of(
+  Future<void> _enterBattle() async {
+    await Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (context) => const MapScreen()));
+    // Returning from the map: captures may have synced from Supabase or
+    // landed locally. Refresh the objective count so the home card stays
+    // in sync with on-device state.
+    if (mounted) {
+      await _loadCapturedCount();
+    }
   }
 
   void _enterBattleWithLeaderboard() {
@@ -84,51 +104,55 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       child: Scaffold(
         body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [GameUiTokens.bg0, GameUiTokens.bg1],
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [GameUiTokens.bg0, GameUiTokens.bg1],
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-            child: Column(
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Column(
-                      children: [
-                        _LiveBattleCard(
-                          pulse: _pulseController,
-                          logoAsset: _logoAsset,
-                        ),
-                        const SizedBox(height: 12),
-                        _LeaderboardTeaser(onTap: _enterBattleWithLeaderboard),
-                        const SizedBox(height: 12),
-                        _StatsTeaser(onTap: () => showPlayerStatsSheet(context)),
-                        const SizedBox(height: 12),
-                        _ObjectiveCard(
-                          capturedCount: _capturedTileCount,
-                          capturedHexes: _capturedHexes,
-                        ),
-                      ],
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.only(bottom: 14),
+                      child: Column(
+                        children: [
+                          _LiveBattleCard(
+                            pulse: _pulseController,
+                            logoAsset: _logoAsset,
+                          ),
+                          const SizedBox(height: 12),
+                          _LeaderboardTeaser(
+                            onTap: _enterBattleWithLeaderboard,
+                          ),
+                          const SizedBox(height: 12),
+                          _StatsTeaser(
+                            onTap: () => showPlayerStatsSheet(context),
+                          ),
+                          const SizedBox(height: 12),
+                          _ObjectiveCard(
+                            capturedCount: _capturedTileCount,
+                            capturedHexes: _capturedHexes,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                _EnterBattleButton(
-                  pulse: _pulseController,
-                  logoAsset: _logoAsset,
-                  onPressed: _enterBattle,
-                ),
-              ],
+                  _EnterBattleButton(
+                    pulse: _pulseController,
+                    logoAsset: _logoAsset,
+                    onPressed: _enterBattle,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
-    ),
     );
   }
 }
@@ -407,8 +431,7 @@ class _ObjectiveCard extends StatelessWidget {
           .where((h) => capturedHexes.contains(h.toLowerCase()))
           .length;
       if (bestSection == null ||
-          owned * bestSection.totalTiles >
-              bestOwned * section.totalTiles) {
+          owned * bestSection.totalTiles > bestOwned * section.totalTiles) {
         bestSection = section;
         bestOwned = owned;
       }
@@ -567,11 +590,7 @@ class _LeaderboardTeaser extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
-              Icons.chevron_right,
-              size: 18,
-              color: GameUiTokens.textMid,
-            ),
+            Icon(Icons.chevron_right, size: 18, color: GameUiTokens.textMid),
           ],
         ),
       ),
@@ -618,11 +637,7 @@ class _StatsTeaser extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
-              Icons.chevron_right,
-              size: 18,
-              color: GameUiTokens.textMid,
-            ),
+            Icon(Icons.chevron_right, size: 18, color: GameUiTokens.textMid),
           ],
         ),
       ),

@@ -12,12 +12,7 @@ class TrailDefinition {
   int get totalTiles => orderedH3Indexes.length;
 }
 
-enum TrailNextTileReason {
-  extendStreak,
-  startTrail,
-  bridgeGap,
-  nearestMissing,
-}
+enum TrailNextTileReason { extendStreak, startTrail, bridgeGap, nearestMissing }
 
 class TrailProgress {
   final TrailDefinition trail;
@@ -53,5 +48,5 @@ class TrailProgress {
     return (ownedTiles / totalTiles) * 100.0;
   }
 
-  String get label => '${trail.name}: $ownedTiles / $totalTiles tiles';
+  String get label => '${trail.name}: $ownedTiles / $totalTiles hexes';
 }

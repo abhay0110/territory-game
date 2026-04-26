@@ -84,7 +84,7 @@ class _TileDetailsDialogState extends State<_TileDetailsDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Tile Details'),
+      title: const Text('Hex Details'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -16,6 +16,7 @@ class MapRenderService {
 
   mb.MapboxMap? _map;
   mb.PolygonAnnotationManager? _corridorMgr;
+  mb.PolylineAnnotationManager? _trailLineMgr;
   mb.PolygonAnnotationManager? _currentMgr;
   mb.PolygonAnnotationManager? _capturedMgr;
   mb.PolygonAnnotationManager? _selectionMgr;
@@ -28,10 +29,13 @@ class MapRenderService {
   final List<mb.PolygonAnnotation> _corridorPolys = [];
   bool _corridorLaneDrawn = false;
 
+  final List<mb.PolylineAnnotation> _trailLines = [];
+  bool _trailLineDrawn = false;
+
   final Map<String, mb.PolygonAnnotation> _capturedPolyByHex = {};
   final Set<String> _visibleCapturedHex = {};
   final Map<String, ({TileOwnership ownership, bool isProtected})>
-      _visibleCapturedState = {};
+  _visibleCapturedState = {};
   final Map<String, ({double lat, double lng})> _centroidCache = {};
 
   /// When true, off-corridor captured tiles are rendered very faintly and the
@@ -55,8 +59,10 @@ class MapRenderService {
 
   static const int _mutedFillColor = 0xFF555555; // desaturated grey
   static const int _mutedOutlineColor = 0xFF333333;
-  static const double _mutedOpacityScale = 0.08; // 8% of normal — strongly muted
-  static const int _mutedCurrentOutlineColor = 0xFF777777; // dimmed outline for user tile when muted
+  static const double _mutedOpacityScale =
+      0.08; // 8% of normal — strongly muted
+  static const int _mutedCurrentOutlineColor =
+      0xFF777777; // dimmed outline for user tile when muted
 
   ({int fillColor, double opacity, int outlineColor}) _styleForTile(
     GameTile tile, {
@@ -71,8 +77,9 @@ class MapRenderService {
     // Use displayHexes (core + 1-ring expansion) so edge-of-trail enemy
     // captures also render with full colour.
     final isOwn = tile.ownership == TileOwnership.mine;
-    final onCorridor =
-        LaunchCorridor.displayHexes.contains(tile.h3Index.toLowerCase());
+    final onCorridor = LaunchCorridor.displayHexes.contains(
+      tile.h3Index.toLowerCase(),
+    );
     final mute = launchEntryMode && !isOwn && !onCorridor;
 
     final fillColor = mute
@@ -106,11 +113,7 @@ class MapRenderService {
         ? (mute ? _mutedCurrentOutlineColor : _currentOutlineColor)
         : baseOutline;
 
-    return (
-      fillColor: fillColor,
-      opacity: opacity,
-      outlineColor: outlineColor,
-    );
+    return (fillColor: fillColor, opacity: opacity, outlineColor: outlineColor);
   }
 
   /// Attach the underlying Mapbox map instance to this service.
@@ -126,14 +129,16 @@ class MapRenderService {
 
     // Corridor lane is created first so it renders below everything.
     _corridorMgr ??= await _map!.annotations.createPolygonAnnotationManager();
+    // Trail polyline sits on top of the corridor lane but under tiles.
+    _trailLineMgr ??= await _map!.annotations.createPolylineAnnotationManager();
     _currentMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _capturedMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _selectionMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     // Halo must be created before ring so ring renders on top.
-    _recommendationHaloMgr ??=
-      await _map!.annotations.createPolygonAnnotationManager();
-    _recommendationMgr ??=
-      await _map!.annotations.createPolygonAnnotationManager();
+    _recommendationHaloMgr ??= await _map!.annotations
+        .createPolygonAnnotationManager();
+    _recommendationMgr ??= await _map!.annotations
+        .createPolygonAnnotationManager();
   }
 
   mb.PolygonAnnotationOptions _polygonOptionsForCell(
@@ -202,8 +207,8 @@ class MapRenderService {
       final now = DateTime.now();
       _visibleCapturedState[hexLower] = (
         ownership: tile.ownership,
-        isProtected: tile.protectedUntil != null &&
-            tile.protectedUntil!.isAfter(now),
+        isProtected:
+            tile.protectedUntil != null && tile.protectedUntil!.isAfter(now),
       );
     } else {
       if (!_visibleCapturedHex.contains(hexLower)) return;
@@ -228,8 +233,7 @@ class MapRenderService {
     final isProtected =
         tile.protectedUntil != null && tile.protectedUntil!.isAfter(now);
 
-    if (prev.ownership == tile.ownership &&
-        prev.isProtected == isProtected) {
+    if (prev.ownership == tile.ownership && prev.isProtected == isProtected) {
       return; // no change
     }
 
@@ -434,7 +438,9 @@ class MapRenderService {
       _selectionPoly = await _selectionMgr!.create(options);
     } catch (error, stackTrace) {
       if (kDebugMode) {
-        debugPrint('MapRenderService.drawRecommendedHex failed for $h3Index: $error');
+        debugPrint(
+          'MapRenderService.drawRecommendedHex failed for $h3Index: $error',
+        );
         debugPrintStack(stackTrace: stackTrace);
       }
     }
@@ -450,8 +456,10 @@ class MapRenderService {
   // ── Corridor lane (active trail highlight) ──
 
   static const int _corridorLaneColor = 0xFF49D6FF; // cyan, same family as glow
-  static const int _corridorLaneOutline = 0xFF2EC4E6; // brighter outline for active feel
-  static const double _corridorLaneOpacity = 0.25; // prominent enough to anchor the trail visually
+  static const int _corridorLaneOutline =
+      0xFF2EC4E6; // brighter outline for active feel
+  static const double _corridorLaneOpacity =
+      0.25; // prominent enough to anchor the trail visually
 
   /// Draw the active launch corridor as a subtle lane overlay.
   ///
@@ -494,6 +502,64 @@ class MapRenderService {
   static const int _accentPrimaryCyan = 0xFF49D6FF;
   static const int _accentPrimaryCyanMuted = 0xFF2BAFD4;
 
+  // ── Trail polyline overlay ──
+
+  /// Color & width for the always-on trail guide line.
+  /// Uses the same cyan family as the corridor lane / glow so the player
+  /// reads them as one continuous "this is your trail" anchor.
+  static const int _trailLineColor = 0xFF49D6FF;
+  static const double _trailLineWidth = 3.5;
+  static const double _trailLineOpacity = 0.55;
+  static const double _trailLineBlur = 1.5;
+
+  /// Draws a thin glowing polyline along the active trail.  Idempotent:
+  /// subsequent calls with the same waypoints are no-ops.
+  ///
+  /// The polyline anchors the player's mental model so the recommended
+  /// hex always reads as "the next step on the line" rather than a hex
+  /// floating in space.
+  Future<void> drawTrailPolyline(
+    List<({double lat, double lng})> waypoints,
+  ) async {
+    if (_trailLineDrawn || waypoints.length < 2) return;
+    await _ensureManagers();
+    if (_trailLineMgr == null) return;
+
+    try {
+      final coordinates = waypoints
+          .map((p) => mb.Position(p.lng, p.lat))
+          .toList(growable: false);
+      final opts = mb.PolylineAnnotationOptions(
+        geometry: mb.LineString(coordinates: coordinates),
+        lineColor: _trailLineColor,
+        lineWidth: _trailLineWidth,
+        lineOpacity: _trailLineOpacity,
+        lineBlur: _trailLineBlur,
+        lineJoin: mb.LineJoin.ROUND,
+      );
+      final line = await _trailLineMgr!.create(opts);
+      _trailLines.add(line);
+      _trailLineDrawn = true;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint('MapRenderService.drawTrailPolyline failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
+  }
+
+  /// Removes the trail polyline overlay (if drawn).
+  Future<void> clearTrailPolyline() async {
+    if (!_trailLineDrawn || _trailLineMgr == null) return;
+    for (final line in _trailLines) {
+      try {
+        await _trailLineMgr!.delete(line);
+      } catch (_) {}
+    }
+    _trailLines.clear();
+    _trailLineDrawn = false;
+  }
+
   /// Draws a two-layer glowing target ring for the recommended tile.
   ///
   /// Layer 1 (halo): soft cyan fill wash — provides glow halo feel.
@@ -531,8 +597,9 @@ class MapRenderService {
         outlineColor: _accentPrimaryCyan, // blend outline into fill
         opacity: haloOpacity,
       );
-      _recommendationHaloPoly =
-          await _recommendationHaloMgr!.create(haloOptions);
+      _recommendationHaloPoly = await _recommendationHaloMgr!.create(
+        haloOptions,
+      );
 
       // ── Layer 2: bright ring (on top of halo) ───────────────────────────
       // Strong fill + vivid outline — makes the tile unmistakable as the
@@ -540,8 +607,9 @@ class MapRenderService {
       final ringOpacity = strong
           ? (pulseOn ? 0.38 : 0.18)
           : (pulseOn ? 0.22 : 0.10);
-      final ringOutline =
-          pulseOn ? _accentPrimaryCyan : _accentPrimaryCyanMuted;
+      final ringOutline = pulseOn
+          ? _accentPrimaryCyan
+          : _accentPrimaryCyanMuted;
       final ringOptions = _polygonOptionsForCell(
         cell,
         fillColor: _accentPrimaryCyan,

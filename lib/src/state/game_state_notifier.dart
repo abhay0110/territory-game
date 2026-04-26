@@ -13,8 +13,9 @@ import '../../features/map/trail_section_progress_service.dart';
 import 'game_state.dart';
 
 /// Central Riverpod provider for all game state.
-final gameStateProvider =
-    NotifierProvider<GameStateNotifier, GameState>(GameStateNotifier.new);
+final gameStateProvider = NotifierProvider<GameStateNotifier, GameState>(
+  GameStateNotifier.new,
+);
 
 /// Derived: resolved HUD personality based on preference + progression.
 final hudPersonalityProvider = Provider<HudPersonality>((ref) {
@@ -63,6 +64,7 @@ const _prefsHudPreference = 'hud_preference_v1';
 const _prefsSessionsStarted = 'sessions_started_count_v1';
 const _prefsShowPreviewEnemyTiles = 'show_preview_enemy_tiles_v1';
 const _prefsSessionActivityMode = 'session_activity_mode_v1';
+const _prefsObjective1CelebrationShown = 'objective1_celebration_shown_v1';
 
 class GameStateNotifier extends Notifier<GameState> {
   @override
@@ -70,14 +72,11 @@ class GameStateNotifier extends Notifier<GameState> {
 
   // ─── Simple state setters ───────────────────────────────
 
-  void setTracking(bool value) =>
-      state = state.copyWith(tracking: value);
+  void setTracking(bool value) => state = state.copyWith(tracking: value);
 
-  void setFollowMe(bool value) =>
-      state = state.copyWith(followMe: value);
+  void setFollowMe(bool value) => state = state.copyWith(followMe: value);
 
-  void setCompactHud(bool value) =>
-      state = state.copyWith(compactHud: value);
+  void setCompactHud(bool value) => state = state.copyWith(compactHud: value);
 
   void setLegendVisible(bool value) =>
       state = state.copyWith(legendVisible: value);
@@ -182,7 +181,9 @@ class GameStateNotifier extends Notifier<GameState> {
       captured: result.isCaptured,
       currentGameTile: result.currentTile,
       visibleTiles: result.visibleTiles,
-      selectedTile: shouldClearSelection ? null : (refreshedSelected ?? state.selectedTile),
+      selectedTile: shouldClearSelection
+          ? null
+          : (refreshedSelected ?? state.selectedTile),
       selectedHex: shouldClearSelection ? null : state.selectedHex,
       clearSelection: shouldClearSelection,
       trailProgress: trailProgress,
@@ -206,7 +207,8 @@ class GameStateNotifier extends Notifier<GameState> {
     state = state.copyWith(currentObjective: objective);
   }
 
-  void updateObjective(ObjectiveEngineService engine, {
+  void updateObjective(
+    ObjectiveEngineService engine, {
     required Set<String> capturedHexes,
     String? streakDirectionHint,
   }) {
@@ -331,7 +333,8 @@ class GameStateNotifier extends Notifier<GameState> {
     switch (result.status) {
       case CaptureAttemptStatus.captured:
         state = state.copyWith(
-            sessionTilesCaptured: state.sessionTilesCaptured + 1);
+          sessionTilesCaptured: state.sessionTilesCaptured + 1,
+        );
       case CaptureAttemptStatus.takeoverCaptured:
         state = state.copyWith(
           sessionTilesCaptured: state.sessionTilesCaptured + 1,
@@ -339,12 +342,15 @@ class GameStateNotifier extends Notifier<GameState> {
         );
       case CaptureAttemptStatus.protectionRefreshed:
         state = state.copyWith(
-            sessionTilesRefreshed: state.sessionTilesRefreshed + 1);
+          sessionTilesRefreshed: state.sessionTilesRefreshed + 1,
+        );
       case CaptureAttemptStatus.protectedByRival:
         state = state.copyWith(
-            sessionRivalBlocked: state.sessionRivalBlocked + 1);
+          sessionRivalBlocked: state.sessionRivalBlocked + 1,
+        );
       case CaptureAttemptStatus.lowAccuracy:
       case CaptureAttemptStatus.tooFarFromCenter:
+      case CaptureAttemptStatus.offTrail:
         break;
     }
   }
@@ -352,7 +358,8 @@ class GameStateNotifier extends Notifier<GameState> {
   // ─── First-session guidance ──────────────────────────────
 
   void refreshFirstSessionGuidance({required bool hasCapturedAnyTile}) {
-    final canArm = !state.firstCaptureCelebrated &&
+    final canArm =
+        !state.firstCaptureCelebrated &&
         !state.isFirstSessionGuided &&
         state.sessionsStartedCount == 0 &&
         !hasCapturedAnyTile;
@@ -374,6 +381,13 @@ class GameStateNotifier extends Notifier<GameState> {
       showPostCaptureGuidance: true,
       clearSelection: true,
     );
+  }
+
+  /// One-shot marker for the numbered "Objective 1" celebration
+  /// (capture 3 hexes). Idempotent: subsequent calls are no-ops.
+  void markObjective1Celebrated() {
+    if (state.objective1CelebrationShown) return;
+    state = state.copyWith(objective1CelebrationShown: true);
   }
 
   void clearPostCaptureGuidance() {
@@ -427,6 +441,8 @@ class GameStateNotifier extends Notifier<GameState> {
     final activityModeRaw = prefs.getString(_prefsSessionActivityMode);
     final milestones =
         prefs.getStringList(_prefsUnlockedMilestones) ?? const [];
+    final objective1Shown =
+        prefs.getBool(_prefsObjective1CelebrationShown) ?? false;
 
     final hudPref = switch (hudPrefRaw) {
       'guided' => HudPreference.guided,
@@ -436,8 +452,9 @@ class GameStateNotifier extends Notifier<GameState> {
 
     state = state.copyWith(
       sessionActive: active,
-      sessionStartedAt:
-          startedAtRaw == null ? null : DateTime.tryParse(startedAtRaw),
+      sessionStartedAt: startedAtRaw == null
+          ? null
+          : DateTime.tryParse(startedAtRaw),
       sessionsStartedCount: sessionsStarted,
       sessionActivityMode: activityModeRaw == 'ride'
           ? ActivityMode.ride
@@ -445,6 +462,7 @@ class GameStateNotifier extends Notifier<GameState> {
       hudPreference: hudPref,
       showPreviewEnemyTiles: showPreview,
       unlockedMilestoneIds: {...milestones},
+      objective1CelebrationShown: objective1Shown,
     );
   }
 
@@ -463,7 +481,9 @@ class GameStateNotifier extends Notifier<GameState> {
     await prefs.setString(_prefsHudPreference, hudPrefRaw);
     await prefs.setInt(_prefsSessionsStarted, state.sessionsStartedCount);
     await prefs.setBool(
-        _prefsShowPreviewEnemyTiles, state.showPreviewEnemyTiles);
+      _prefsShowPreviewEnemyTiles,
+      state.showPreviewEnemyTiles,
+    );
 
     if (state.sessionStartedAt == null) {
       await prefs.remove(_prefsSessionStartedAt);
@@ -476,6 +496,10 @@ class GameStateNotifier extends Notifier<GameState> {
 
     final milestoneValues = state.unlockedMilestoneIds.toList()..sort();
     await prefs.setStringList(_prefsUnlockedMilestones, milestoneValues);
+    await prefs.setBool(
+      _prefsObjective1CelebrationShown,
+      state.objective1CelebrationShown,
+    );
   }
 }
 
@@ -493,43 +517,43 @@ class ActivityModeConfig {
   /// Auto-capture dwell time before a tile is eligible.
   Duration get autoCaptureDwellTime => switch (mode) {
     ActivityMode.walkRun => const Duration(seconds: 5),
-    ActivityMode.ride    => const Duration(seconds: 3),
+    ActivityMode.ride => const Duration(seconds: 3),
   };
 
   /// Minimum gap between successive auto-capture attempts.
   Duration get autoCaptureDebounce => switch (mode) {
     ActivityMode.walkRun => const Duration(seconds: 4),
-    ActivityMode.ride    => const Duration(seconds: 2),
+    ActivityMode.ride => const Duration(seconds: 2),
   };
 
   /// Per-tile cooldown after a capture attempt.
   Duration get autoCaptureTileCooldown => switch (mode) {
     ActivityMode.walkRun => const Duration(seconds: 12),
-    ActivityMode.ride    => const Duration(seconds: 8),
+    ActivityMode.ride => const Duration(seconds: 8),
   };
 
   /// Maximum plausible speed for this mode. Movement above this threshold
   /// is treated as invalid (e.g. car travel in Walk/Run mode).
   double get maxSpeedMetersPerSecond => switch (mode) {
-    ActivityMode.walkRun => 4.5,   // ~16 km/h — covers fast running
-    ActivityMode.ride    => 15.0,  // ~54 km/h — covers fast cycling
+    ActivityMode.walkRun => 4.5, // ~16 km/h — covers fast running
+    ActivityMode.ride => 15.0, // ~54 km/h — covers fast cycling
   };
 
   /// How far to search for recommendation targets.
   double get maxRecommendationDistanceMeters => switch (mode) {
     ActivityMode.walkRun => 500,
-    ActivityMode.ride    => 800,
+    ActivityMode.ride => 800,
   };
 
   /// Default follow-me camera zoom.
   double get defaultCameraZoom => switch (mode) {
     ActivityMode.walkRun => 15.2,
-    ActivityMode.ride    => 14.8,
+    ActivityMode.ride => 14.8,
   };
 
   /// First-capture guided-mode camera zoom.
   double get firstCaptureCameraZoom => switch (mode) {
     ActivityMode.walkRun => 16.1,
-    ActivityMode.ride    => 15.6,
+    ActivityMode.ride => 15.6,
   };
 }

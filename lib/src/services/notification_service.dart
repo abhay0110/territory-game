@@ -81,14 +81,11 @@ class NotificationService {
   Future<void> storeToken(String playerId) async {
     if (_fcmToken == null) return;
     try {
-      await Supabase.instance.client.from('player_devices').upsert(
-        {
-          'player_id': playerId,
-          'fcm_token': _fcmToken,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        },
-        onConflict: 'player_id',
-      );
+      await Supabase.instance.client.from('player_devices').upsert({
+        'player_id': playerId,
+        'fcm_token': _fcmToken,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'player_id');
     } catch (e, st) {
       dev.log(
         'storeToken failed: $e',
@@ -103,9 +100,7 @@ class NotificationService {
   /// Currently logs only — add routing / business logic later.
   void setupHandlers() {
     // Background (app terminated or in background).
-    FirebaseMessaging.onBackgroundMessage(
-      _firebaseMessagingBackgroundHandler,
-    );
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     // Foreground — show a local notification so user sees something.
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
@@ -162,10 +157,7 @@ class NotificationService {
 
   Future<void> _fetchToken() async {
     _fcmToken = await _messaging.getToken();
-    dev.log(
-      'FCM token: ${_fcmToken ?? 'null'}',
-      name: 'NotificationService',
-    );
+    dev.log('FCM token: ${_fcmToken ?? 'null'}', name: 'NotificationService');
   }
 
   Future<void> _showLocalNotification(RemoteMessage message) async {
@@ -214,7 +206,10 @@ class NotificationService {
     _notifyTileLostAsync(previousOwnerId, h3Hex);
   }
 
-  Future<void> _notifyTileLostAsync(String previousOwnerId, String h3Hex) async {
+  Future<void> _notifyTileLostAsync(
+    String previousOwnerId,
+    String h3Hex,
+  ) async {
     try {
       await Supabase.instance.client.functions.invoke(
         'notify-tile-event',
@@ -229,10 +224,7 @@ class NotificationService {
         name: 'NotificationService',
       );
     } catch (e) {
-      dev.log(
-        'notifyTileLost failed: $e',
-        name: 'NotificationService',
-      );
+      dev.log('notifyTileLost failed: $e', name: 'NotificationService');
     }
   }
 
@@ -278,8 +270,8 @@ class NotificationService {
 
       await _localNotifications.zonedSchedule(
         notifId,
-        'Tile vulnerable',
-        'One of your tiles can now be taken. Refresh it on the trail.',
+        'Hex vulnerable',
+        'One of your hexes can now be taken. Refresh it on the trail.',
         scheduledDate,
         details,
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,

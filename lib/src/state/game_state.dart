@@ -69,6 +69,9 @@ class GameState {
   final bool showPostCaptureGuidance;
   final bool guidedCameraCenteredOnce;
 
+  // ─── Numbered objective celebrations (one-shot) ───────────
+  final bool objective1CelebrationShown;
+
   const GameState({
     this.sessionActive = false,
     this.sessionStartedAt,
@@ -119,6 +122,7 @@ class GameState {
     this.firstCaptureCelebrated = false,
     this.showPostCaptureGuidance = false,
     this.guidedCameraCenteredOnce = false,
+    this.objective1CelebrationShown = false,
   });
 
   GameState copyWith({
@@ -171,16 +175,15 @@ class GameState {
     bool? firstCaptureCelebrated,
     bool? showPostCaptureGuidance,
     bool? guidedCameraCenteredOnce,
+    bool? objective1CelebrationShown,
   }) {
     return GameState(
       sessionActive: sessionActive ?? this.sessionActive,
       sessionStartedAt: sessionStartedAt ?? this.sessionStartedAt,
-      sessionActivityMode:
-          sessionActivityMode ?? this.sessionActivityMode,
+      sessionActivityMode: sessionActivityMode ?? this.sessionActivityMode,
       sessionDistanceMeters:
           sessionDistanceMeters ?? this.sessionDistanceMeters,
-      sessionTilesCaptured:
-          sessionTilesCaptured ?? this.sessionTilesCaptured,
+      sessionTilesCaptured: sessionTilesCaptured ?? this.sessionTilesCaptured,
       sessionTilesRefreshed:
           sessionTilesRefreshed ?? this.sessionTilesRefreshed,
       sessionRivalBlocked: sessionRivalBlocked ?? this.sessionRivalBlocked,
@@ -190,8 +193,7 @@ class GameState {
       lastSessionPositionTime:
           lastSessionPositionTime ?? this.lastSessionPositionTime,
       sessionMilestones: sessionMilestones ?? this.sessionMilestones,
-      sessionsStartedCount:
-          sessionsStartedCount ?? this.sessionsStartedCount,
+      sessionsStartedCount: sessionsStartedCount ?? this.sessionsStartedCount,
       currentTile: currentTile ?? this.currentTile,
       captured: captured ?? this.captured,
       currentGameTile: currentGameTile ?? this.currentGameTile,
@@ -221,24 +223,23 @@ class GameState {
       showPreviewEnemyTiles:
           showPreviewEnemyTiles ?? this.showPreviewEnemyTiles,
       visibleRadiusMeters: visibleRadiusMeters ?? this.visibleRadiusMeters,
-      unlockedMilestoneIds:
-          unlockedMilestoneIds ?? this.unlockedMilestoneIds,
+      unlockedMilestoneIds: unlockedMilestoneIds ?? this.unlockedMilestoneIds,
       capturePulseActive: capturePulseActive ?? this.capturePulseActive,
       captureFeedbackText: clearCaptureFeedback
           ? null
           : (captureFeedbackText ?? this.captureFeedbackText),
-      captureFeedbackSuccess:
-          clearCaptureFeedback
-              ? false
-              : (captureFeedbackSuccess ?? this.captureFeedbackSuccess),
-      isFirstSessionGuided:
-          isFirstSessionGuided ?? this.isFirstSessionGuided,
+      captureFeedbackSuccess: clearCaptureFeedback
+          ? false
+          : (captureFeedbackSuccess ?? this.captureFeedbackSuccess),
+      isFirstSessionGuided: isFirstSessionGuided ?? this.isFirstSessionGuided,
       firstCaptureCelebrated:
           firstCaptureCelebrated ?? this.firstCaptureCelebrated,
       showPostCaptureGuidance:
           showPostCaptureGuidance ?? this.showPostCaptureGuidance,
       guidedCameraCenteredOnce:
           guidedCameraCenteredOnce ?? this.guidedCameraCenteredOnce,
+      objective1CelebrationShown:
+          objective1CelebrationShown ?? this.objective1CelebrationShown,
     );
   }
 }

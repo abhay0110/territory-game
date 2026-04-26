@@ -16,7 +16,9 @@ class MapLegend extends StatelessWidget {
           decoration: BoxDecoration(
             color: color,
             borderRadius: BorderRadius.circular(2),
-            border: outlined ? Border.all(color: Colors.white, width: 1.2) : null,
+            border: outlined
+                ? Border.all(color: Colors.white, width: 1.2)
+                : null,
           ),
         ),
         const SizedBox(width: 6),
@@ -46,11 +48,7 @@ class MapLegend extends StatelessWidget {
             _legendItem(GameColors.rivalRed, 'Rival protected'),
             _legendItem(GameColors.rivalRedDark, 'Rival capturable'),
             _legendItem(GameColors.neutralGray, 'Neutral'),
-            _legendItem(
-              Colors.black,
-              'Current tile',
-              outlined: true,
-            ),
+            _legendItem(Colors.black, 'Current hex', outlined: true),
           ],
         ),
       ),

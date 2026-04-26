@@ -33,7 +33,7 @@ class ObjectiveEngineService {
     // State 6: No valid current tile
     if (currentTile == null || currentTile.h3Index.isEmpty) {
       return const ObjectiveState(
-        title: 'Move closer to a visible tile to continue.',
+        title: 'Move closer to a visible hex to continue.',
       );
     }
 
@@ -73,7 +73,7 @@ class ObjectiveEngineService {
     if (tileOwnership == TileOwnership.mine || isOwnedByPlayer) {
       if (oneTileFromContest != null) {
         return ObjectiveState(
-          title: 'One more tile contests this section.',
+          title: 'One more hex contests this section.',
           detail:
               '${oneTileFromContest.section.name} is one capture away from pressure.',
         );
@@ -88,19 +88,19 @@ class ObjectiveEngineService {
       }
 
       return const ObjectiveState(
-        title: 'Move to a nearby open tile to extend your streak.',
+        title: 'Move to a nearby open hex to extend your streak.',
       );
     }
 
     // State 2: Neutral tile
     if (tileOwnership == TileOwnership.neutral) {
       final contextDetail = capturedHexesCount == 0
-          ? 'Capture this tile to claim your first territory.'
-          : 'Capture this tile to expand your route.';
+          ? 'Capture this hex to claim your first territory.'
+          : 'Capture this hex to expand your route.';
 
       if (strengthensYourControl) {
         return ObjectiveState(
-          title: 'This tile strengthens your control.',
+          title: 'This hex strengthens your control.',
           detail: contextDetail,
           actionLabel: 'Capture',
         );
@@ -117,19 +117,19 @@ class ObjectiveEngineService {
       if (isProtected) {
         // State 4: Protected rival tile
         return const ObjectiveState(
-          title: 'This tile is protected — target another nearby tile.',
+          title: 'This hex is protected — target another nearby hex.',
         );
       } else {
         // State 5: Capturable rival tile
         if (pressuresRivalSection) {
           return const ObjectiveState(
-            title: 'Target this tile to pressure the rival section.',
+            title: 'Target this hex to pressure the rival section.',
             detail: 'This capture shifts section momentum toward you.',
             actionLabel: 'Capture',
           );
         }
         return const ObjectiveState(
-          title: 'Capture this tile to steal enemy territory.',
+          title: 'Capture this hex to steal enemy territory.',
           actionLabel: 'Capture',
         );
       }
@@ -137,7 +137,7 @@ class ObjectiveEngineService {
 
     // Fallback (should not reach here)
     return const ObjectiveState(
-      title: 'Keep capturing tiles to expand your territory.',
+      title: 'Keep capturing hexes to expand your territory.',
     );
   }
 }

@@ -47,7 +47,7 @@ Future<void> showSectionProgressDialog(
     }
     if (p.tilesToTakeControl > 0) {
       final plural = p.tilesToTakeControl == 1 ? '' : 's';
-      return '${p.tilesToTakeControl} tile$plural to take control';
+      return '${p.tilesToTakeControl} hex$plural to take control';
     }
     if (p.canFlipWithNextCapture) {
       return 'Next capture flips section';

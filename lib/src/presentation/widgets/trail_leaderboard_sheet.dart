@@ -101,7 +101,7 @@ class _TrailLeaderboardSheetState extends State<_TrailLeaderboardSheet> {
                     ),
                     if (_snapshot != null)
                       Text(
-                        '${_snapshot!.trailTotalTiles} tiles',
+                        '${_snapshot!.trailTotalTiles} hexes',
                         style: GameUiText.meta(
                           color: GameUiTokens.textLow,
                           size: 11,
@@ -277,7 +277,7 @@ class _YourPositionCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${snapshot.yourTotalTiles} tiles · $percent% of trail',
+                  '${snapshot.yourTotalTiles} hexes · $percent% of trail',
                   style: GameUiText.meta(color: GameUiTokens.textMid, size: 11),
                 ),
               ],
@@ -343,7 +343,7 @@ class _PlayerRow extends StatelessWidget {
               ),
             ),
           ),
-          // Tiles count
+          // Hex count
           Text(
             '${entry.ownedTiles}',
             style: GameUiText.body(
@@ -356,7 +356,7 @@ class _PlayerRow extends StatelessWidget {
           ),
           const SizedBox(width: 4),
           Text(
-            'tiles',
+            'hexes',
             style: GameUiText.meta(color: GameUiTokens.textLow, size: 10),
           ),
         ],
@@ -407,7 +407,7 @@ class _SectionControlRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${section.yourTiles} / ${section.totalTiles} tiles · $yourPct%',
+                  '${section.yourTiles} / ${section.totalTiles} hexes · $yourPct%',
                   style: GameUiText.meta(color: GameUiTokens.textMid, size: 10),
                 ),
               ],

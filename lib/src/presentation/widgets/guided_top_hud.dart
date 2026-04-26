@@ -150,9 +150,9 @@ class GuidedTopHud extends StatelessWidget {
         message: direction == null
             ? (hasGlowTarget
                   ? (riding
-                        ? '▶ Start session, then ride to the glowing tile'
-                        : '▶ Start session, then move to the glowing tile')
-                  : '▶ Start session to begin capturing tiles')
+                        ? '▶ Start session, then ride to the glowing hex'
+                        : '▶ Start session, then move to the glowing hex')
+                  : '▶ Start session to begin capturing hexes')
             : (hasGlowTarget
                   ? (riding
                         ? '▶ Start session, then ride $direction to the glow'
@@ -178,8 +178,8 @@ class GuidedTopHud extends StatelessWidget {
                   : '⚡ Session live — head to $corridorName')
             : direction == null
             ? (riding
-                  ? '⚡ Session live — ride to the glowing tile'
-                  : '⚡ Session live — move to the glowing tile')
+                  ? '⚡ Session live — ride to the glowing hex'
+                  : '⚡ Session live — move to the glowing hex')
             : (riding
                   ? '⚡ Session live — ride $direction to the glow'
                   : '⚡ Session live — move $direction to the glow'),
@@ -194,8 +194,8 @@ class GuidedTopHud extends StatelessWidget {
       return GuidedOverlayCard(
         message: direction == null
             ? (hasSectionPressure
-                  ? '🔥 Great capture. One more tile can swing this section'
-                  : '🔥 Great capture. Take the next glowing tile')
+                  ? '🔥 Great capture. One more hex can swing this section'
+                  : '🔥 Great capture. Take the next glowing hex')
             : (riding
                   ? '🔥 Great capture. Ride $direction to extend your streak'
                   : '🔥 Great capture. Capture $direction to extend your streak'),
@@ -262,7 +262,7 @@ class GuidedTopHud extends StatelessWidget {
             runSpacing: 4,
             children: [
               HudPill(
-                label: 'Tiles',
+                label: 'Hexes',
                 value: '$mineCount',
                 color: mineCount > 0
                     ? GameUiTokens.accentSecondary

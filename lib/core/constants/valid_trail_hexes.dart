@@ -33,6 +33,15 @@ class ValidTrailHexes {
 
   static late final Set<String> _validIds;
 
+  /// Strict polyline-core hexes only (Phase 1 — hexes the trail polyline
+  /// physically passes through). Excludes 1-ring corridor expansion and
+  /// the Kenmore north-side correction set.
+  ///
+  /// Used to bias glow target selection toward hexes that visually sit
+  /// on the trail line, while leaving capture eligibility and
+  /// section/streak math on the broader [validHexIds] set.
+  static late final Set<String> _coreIds;
+
   /// Maps each valid hex to the nearest point on the trail polyline.
   /// Used for snapped guidance (direction arrows, distance copy).
   static late final Map<String, ({double lat, double lng})> _guidancePoints;
@@ -53,6 +62,20 @@ class ValidTrailHexes {
   static Set<String> get validHexIds {
     ensureInitialized();
     return _validIds;
+  }
+
+  /// Strict polyline-core hex IDs (no 1-ring or Kenmore expansion).
+  /// Prefer these for glow target selection so the recommendation visually
+  /// hugs the trail line.
+  static Set<String> get coreHexIds {
+    ensureInitialized();
+    return _coreIds;
+  }
+
+  /// Whether [hexLower] is a polyline-core hex (Phase 1 only).
+  static bool isCore(String hexLower) {
+    ensureInitialized();
+    return _coreIds.contains(hexLower);
   }
 
   /// Whether [hexLower] is a valid recommendation target.
@@ -105,6 +128,7 @@ class ValidTrailHexes {
     final waypoints = SeattleTrailDefinitions.burkeGilmanWaypoints;
 
     _validIds = {};
+    _coreIds = {};
     _guidancePoints = {};
     _debugSamplePoints = {};
 
@@ -158,6 +182,7 @@ class ValidTrailHexes {
 
     // Start with all core hexes.
     _validIds.addAll(coreHexes);
+    _coreIds.addAll(coreHexes);
 
     // Phase 2: Corridor expansion — add corridor hexes that are H3
     // neighbors of a core hex.  This closes continuity gaps at curves
@@ -212,10 +237,8 @@ class ValidTrailHexes {
       final coreCell = BigInt.parse(coreHex, radix: 16);
       final coreBnd = _h3.cellToBoundary(coreCell);
       if (coreBnd.isEmpty) continue;
-      final coreLat =
-          coreBnd.fold(0.0, (s, p) => s + p.lat) / coreBnd.length;
-      final coreLng =
-          coreBnd.fold(0.0, (s, p) => s + p.lon) / coreBnd.length;
+      final coreLat = coreBnd.fold(0.0, (s, p) => s + p.lat) / coreBnd.length;
+      final coreLng = coreBnd.fold(0.0, (s, p) => s + p.lon) / coreBnd.length;
 
       // Only process core hexes inside the Kenmore segment.
       if (coreLat < kenmoreLatMin ||

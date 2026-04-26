@@ -40,7 +40,9 @@ class MapController {
 
   Future<MapBootstrapResult> initialize() async {
     await captureService.loadFromPrefs();
-    debugPrint('[MapCtrl] initialize: local capturedHexes=${captureService.capturedHexes.length}');
+    debugPrint(
+      '[MapCtrl] initialize: local capturedHexes=${captureService.capturedHexes.length}',
+    );
 
     try {
       await captureService.ensureSignedIn();
@@ -48,7 +50,9 @@ class MapController {
       debugPrint('[MapCtrl] initialize: signedIn userId=$uid');
       if (uid != null) {
         await captureService.loadFromSupabase(uid);
-        debugPrint('[MapCtrl] initialize: after Supabase sync, capturedHexes=${captureService.capturedHexes.length}');
+        debugPrint(
+          '[MapCtrl] initialize: after Supabase sync, capturedHexes=${captureService.capturedHexes.length}',
+        );
       }
       return const MapBootstrapResult(synced: true);
     } catch (error) {
@@ -290,14 +294,32 @@ class MapController {
     final existingTile = captureService.getTileByHex(currentHex);
     final now = DateTime.now();
 
-    debugPrint('[MapCtrl] captureTile($currentHex) acc=$accuracy '
-        'existing=${existingTile?.ownership} userId=$userId');
+    debugPrint(
+      '[MapCtrl] captureTile($currentHex) acc=$accuracy '
+      'existing=${existingTile?.ownership} userId=$userId',
+    );
+
+    // Off-trail guard: a player physically inside an H3 cell adjacent to the
+    // visible trail corridor (sidewalk / parking lot / nearby street that
+    // isn't part of the lane the player sees) must NOT be able to
+    // auto-capture that cell. We gate on `LaunchCorridor.displayHexes` so
+    // capture eligibility matches the visual lane on the map and the
+    // leaderboard membership rule. Owned/rival rendering is unaffected.
+    final hexLower = currentHex.toLowerCase();
+    if (!LaunchCorridor.displayHexes.contains(hexLower)) {
+      debugPrint(
+        '[MapCtrl] ✘ offTrail: $currentHex not in LaunchCorridor.displayHexes',
+      );
+      return const CaptureAttemptResult(status: CaptureAttemptStatus.offTrail);
+    }
 
     if (existingTile != null &&
         existingTile.ownership == TileOwnership.enemy &&
         existingTile.protectedUntil != null &&
         existingTile.protectedUntil!.isAfter(now)) {
-      debugPrint('[MapCtrl] ✘ protectedByRival until ${existingTile.protectedUntil}');
+      debugPrint(
+        '[MapCtrl] ✘ protectedByRival until ${existingTile.protectedUntil}',
+      );
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.protectedByRival,
         protectedUntil: existingTile.protectedUntil,
@@ -305,7 +327,9 @@ class MapController {
     }
 
     if (accuracy == null || accuracy > maxAllowedAccuracyMeters) {
-      debugPrint('[MapCtrl] ✘ lowAccuracy: $accuracy > $maxAllowedAccuracyMeters');
+      debugPrint(
+        '[MapCtrl] ✘ lowAccuracy: $accuracy > $maxAllowedAccuracyMeters',
+      );
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.lowAccuracy,
         accuracy: accuracy,
@@ -322,7 +346,9 @@ class MapController {
     );
 
     if (distanceToCenter > maxCaptureDistanceMeters) {
-      debugPrint('[MapCtrl] ✘ tooFarFromCenter: ${distanceToCenter.toStringAsFixed(1)}m > ${maxCaptureDistanceMeters}m');
+      debugPrint(
+        '[MapCtrl] ✘ tooFarFromCenter: ${distanceToCenter.toStringAsFixed(1)}m > ${maxCaptureDistanceMeters}m',
+      );
       return CaptureAttemptResult(
         status: CaptureAttemptStatus.tooFarFromCenter,
         distanceToCenter: distanceToCenter,
@@ -338,7 +364,9 @@ class MapController {
       _ => CaptureAttemptStatus.captured,
     };
 
-    debugPrint('[MapCtrl] captureTile result: status=$status synced=${captureResult.synced}');
+    debugPrint(
+      '[MapCtrl] captureTile result: status=$status synced=${captureResult.synced}',
+    );
     return CaptureAttemptResult(
       status: status,
       synced: captureResult.synced,
@@ -391,6 +419,7 @@ enum CaptureAttemptStatus {
   lowAccuracy,
   tooFarFromCenter,
   protectedByRival,
+  offTrail,
 }
 
 class CaptureAttemptResult {

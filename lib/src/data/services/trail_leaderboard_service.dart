@@ -75,8 +75,11 @@ class TrailLeaderboardService {
     final trail = SeattleTrailDefinitions.trails.firstWhere(
       (t) => t.id == 'burke_gilman',
     );
-    // Use displayHexes (core + 1-ring visual corridor) so captures on
-    // trail-edge hexes count toward the leaderboard.
+    // Use LaunchCorridor.displayHexes so leaderboard counts match the
+    // visual trail lane the player sees on the map (core + 1-ring
+    // expansion). Using the strict ValidTrailHexes set caused
+    // cross-device count disagreements when a legitimate captured tile
+    // sat on an expansion hex.
     final trailHexes = LaunchCorridor.displayHexes;
     final currentUserId = _supabase.auth.currentUser?.id;
 
@@ -87,7 +90,10 @@ class TrailLeaderboardService {
     try {
       const batchSize = 200;
       for (var i = 0; i < hexList.length; i += batchSize) {
-        final batch = hexList.sublist(i, math.min(i + batchSize, hexList.length));
+        final batch = hexList.sublist(
+          i,
+          math.min(i + batchSize, hexList.length),
+        );
         final batchRows =
             await _supabase
                     .from('tile_captures')

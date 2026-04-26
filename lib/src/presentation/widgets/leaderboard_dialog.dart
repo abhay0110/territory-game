@@ -37,7 +37,7 @@ Future<void> showLeaderboardDialog(
 
   String projectedLabel(TrailProgress p) {
     if (p.projectedGainTiles > 0) {
-      return 'streak becomes ${p.projectedOwnedSegmentTiles} (+${p.projectedGainTiles} tile${p.projectedGainTiles == 1 ? '' : 's'})';
+      return 'streak becomes ${p.projectedOwnedSegmentTiles} (+${p.projectedGainTiles} hex${p.projectedGainTiles == 1 ? '' : 'es'})';
     }
     return 'streak stays ${p.projectedOwnedSegmentTiles}';
   }
@@ -46,14 +46,14 @@ Future<void> showLeaderboardDialog(
     final progress = (p.completionPercent / 100).clamp(0.0, 1.0).toDouble();
     final percent = p.completionPercent.toStringAsFixed(0);
     final objectiveDistance = p.bestNextTileDistanceMeters == null
-      ? '--'
-      : formatDistance(p.bestNextTileDistanceMeters!);
+        ? '--'
+        : formatDistance(p.bestNextTileDistanceMeters!);
     final objectiveLine = p.bestNextTileH3 == null
-      ? (p.isComplete ? 'Next objective: complete' : 'Next objective: --')
-      : 'Next objective: ${p.trail.name} • $objectiveDistance';
+        ? (p.isComplete ? 'Next objective: complete' : 'Next objective: --')
+        : 'Next objective: ${p.trail.name} • $objectiveDistance';
     final nearestFallback = p.nearestMissingTileDistanceMeters == null
-      ? '--'
-      : formatDistance(p.nearestMissingTileDistanceMeters!);
+        ? '--'
+        : formatDistance(p.nearestMissingTileDistanceMeters!);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -79,16 +79,13 @@ Future<void> showLeaderboardDialog(
             ),
           ),
           const SizedBox(height: 4),
-          Text(
-            objectiveLine,
-            style: const TextStyle(fontSize: 12),
-          ),
+          Text(objectiveLine, style: const TextStyle(fontSize: 12)),
           Text(
             '${reasonLabel(p.bestNextTileReason)} • ${projectedLabel(p)}',
             style: const TextStyle(fontSize: 12),
           ),
           Text(
-            'Current longest streak: ${p.longestOwnedSegmentTiles} tiles',
+            'Current longest streak: ${p.longestOwnedSegmentTiles} hexes',
             style: const TextStyle(fontSize: 12),
           ),
           Text(
@@ -111,9 +108,11 @@ Future<void> showLeaderboardDialog(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Tiles captured this week: ${stats.capturesThisWeek}'),
-              Text('Tiles currently owned: ${stats.currentlyOwned}'),
-              Text('Longest protection streak: ${stats.longestProtectionStreak}'),
+              Text('Hexes captured this week: ${stats.capturesThisWeek}'),
+              Text('Hexes currently owned: ${stats.currentlyOwned}'),
+              Text(
+                'Longest protection streak: ${stats.longestProtectionStreak}',
+              ),
               if (stats.trailProgress.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 const Text(

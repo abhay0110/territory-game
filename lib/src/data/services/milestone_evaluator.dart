@@ -29,22 +29,22 @@ class MilestoneEvaluator {
       ),
       (
         id: 'first_tile',
-        title: '🏁 First tile captured',
+        title: '🏁 First hex captured',
         unlockedNow: hasCapturedTiles,
       ),
       (
         id: 'streak_3',
-        title: '🔥 3-tile streak reached',
+        title: '🔥 3-hex streak reached',
         unlockedNow: trailProgress.any((p) => p.longestOwnedSegmentTiles >= 3),
       ),
       (
         id: 'streak_5',
-        title: '🔥 5-tile streak reached',
+        title: '🔥 5-hex streak reached',
         unlockedNow: trailProgress.any((p) => p.longestOwnedSegmentTiles >= 5),
       ),
       (
         id: 'streak_10',
-        title: '⚡ 10-tile streak reached',
+        title: '⚡ 10-hex streak reached',
         unlockedNow: trailProgress.any((p) => p.longestOwnedSegmentTiles >= 10),
       ),
       (
