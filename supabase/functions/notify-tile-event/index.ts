@@ -159,11 +159,7 @@ serve(async (req) => {
     );
     const h3Hex = String(payload.h3_hex ?? payload.hexId ?? "").toLowerCase();
 
-    if (
-      type !== "tile_lost" &&
-      type !== "section_lost" &&
-      type !== "test_push" // TEMP: test_push — remove before public launch
-    ) {
+    if (type !== "tile_lost" && type !== "section_lost") {
       return json({ success: false, reason: "unknown_event" }, 400);
     }
     if (!UUID_RE.test(targetUserId)) {
@@ -222,12 +218,6 @@ serve(async (req) => {
             title: "Tile captured",
             body:
               "Someone just took one of your Burke-Gilman tiles. Take it back.",
-          }
-        // TEMP: test_push — remove before public launch
-        : type === "test_push"
-        ? {
-            title: "HexTrail test",
-            body: "Push notifications are working on this device.",
           }
         : {
             title: "Section lost",

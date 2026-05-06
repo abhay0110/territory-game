@@ -155,6 +155,31 @@ class NotificationService {
         iOS: DarwinInitializationSettings(),
       ),
     );
+
+    // Pre-register notification channels so background FCM deliveries and
+    // scheduled local notifications land on configured channels (some
+    // OEMs silence notifications routed to the unconfigured "Misc" channel).
+    final androidImpl = _localNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    await androidImpl?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'hextrail_default',
+        'HexTrail',
+        description: 'HexTrail game notifications',
+        importance: Importance.high,
+      ),
+    );
+    await androidImpl?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'hextrail_territory',
+        'Territory Alerts',
+        description: 'Tile capture and defense alerts',
+        importance: Importance.high,
+      ),
+    );
+
     _localNotifInitialized = true;
   }
 
