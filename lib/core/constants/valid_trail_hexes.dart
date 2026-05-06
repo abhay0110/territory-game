@@ -29,7 +29,76 @@ class ValidTrailHexes {
 
   /// Manual blacklist for known bad hexes (water, inaccessible shoreline).
   /// Add lowercase hex strings here to force-exclude them.
-  static const Set<String> _blacklist = {};
+  ///
+  /// Kenmore Air Harbor / north-shore lakefront cluster: 11 hexes added by
+  /// the Phase 2.5 waypoint-proximity expansion that fall 214–558m off the
+  /// actual Burke-Gilman polyline (verified against OSM relation 2183654 in
+  /// tool/diff_hex_sets.dart).  Several sit inside LaunchCorridor's water
+  /// bbox.  These are visible on the map south of the trail over Lake
+  /// Washington / the seaplane apron and are not reachable on foot.
+  ///
+  /// Visual-audit batch (10 hexes): identified via in-app tap-to-log
+  /// against the live OSM polyline overlay.  Spread across Bothell,
+  /// Kenmore, UW/Sand Point, Lake Union and Ballard — Phase 2 / 2.5
+  /// false positives that drift from the actual trail.
+  static const Set<String> _blacklist = {
+    // Kenmore Air Harbor / lakefront (Phase 2.5 false positives)
+    '8928d54e20bffff', // 47.75329, -122.25585  (558m off-trail, in water)
+    '8928d54e20fffff', // 47.75438, -122.25984  (406m off-trail, in water)
+    '8928d54e233ffff', // 47.75369, -122.26763  (389m off-trail)
+    '8928d54e23bffff', // 47.75546, -122.26384  (283m off-trail, in water)
+    '8928d54e243ffff', // 47.75397, -122.24806  (429m off-trail)
+    '8928d54e247ffff', // 47.75506, -122.25206  (367m off-trail)
+    '8928d54e25bffff', // 47.75289, -122.24407  (474m off-trail)
+    '8928d54e273ffff', // 47.75614, -122.25605  (241m off-trail, in water)
+    '8928d54f013ffff', // 47.75343, -122.20492  (276m off-trail)
+    '8928d54f193ffff', // 47.75357, -122.23628  (264m off-trail)
+    '8928d54f197ffff', // 47.75465, -122.24027  (214m off-trail)
+    // Visual-audit batch — user-tapped, off-trail
+    '8928d54f083ffff', // 47.74924, -122.20836  Wayne / Bothell
+    '8928d54f0a3ffff', // 47.75397, -122.21637  Bothell
+    '8928d54f563ffff', // 47.75076, -122.22866  Bothell west
+    '8928d54e3cbffff', // 47.75627, -122.27616  Kenmore
+    '8928d54e4d7ffff', // 47.71208, -122.28039  Lake Forest Park
+    '8928d541db7ffff', // 47.68742, -122.27096  UW / Sand Point
+    '8928d547613ffff', // 47.66022, -122.36180  Lake Union
+    '8928d5473abffff', // 47.68871, -122.39914  Ballard
+    '8928d5473bbffff', // 47.68558, -122.40010  Ballard
+    '8928d547387ffff', // 47.68268, -122.39943  Ballard
+    // Visual-audit batch 2 — user-tapped, off-trail
+    '8928d54e0c7ffff', // 47.73518, -122.28212  Lake Forest Park N
+    '8928d54e09bffff', // 47.73047, -122.28566  Lake Forest Park
+    '8928d54e457ffff', // 47.71968, -122.27626  Lake Forest Park S
+    '8928d540a4fffff', // 47.70449, -122.27169  Sheridan Beach
+    '8928d540a1bffff', // 47.69848, -122.27988  Matthews Beach N
+    '8928d540ad3ffff', // 47.69146, -122.27509  Matthews Beach
+    '8928d54032fffff', // 47.67926, -122.26161  Sand Point N
+    '8928d540163ffff', // 47.66619, -122.27735  UW / Husky Stadium area
+    '8928d5401afffff', // 47.65956, -122.29259  Montlake
+    '8928d540123ffff', // 47.66427, -122.28848  UW (was core — confirmed off-trail)
+    '8928d540127ffff', // 47.66548, -122.29266  UW
+    '8928d542a23ffff', // 47.65180, -122.31544  Eastlake / Portage Bay
+    '8928d542a27ffff', // 47.65280, -122.31927  Eastlake
+    '8928d542b43ffff', // 47.65709, -122.32381  Wallingford
+    '8928d5470cfffff', // 47.66844, -122.38286  Ballard / Fremont
+    // Visual-audit batch 3 — user-tapped, off-trail
+    '8928d54e3c3ffff', // 47.75369, -122.27929  Kenmore
+    '8928d54e3d7ffff', // 47.75207, -122.28308  Kenmore W
+    '8928d54294bffff', // 47.64622, -122.34557  Eastlake (was core — confirmed off-trail)
+    '8928d547013ffff', // 47.66669, -122.39049  Ballard
+    '8928d547037ffff', // 47.67288, -122.40245  Ballard
+    '8928d547027ffff', // 47.67551, -122.40293  Ballard
+    '8928d5470a7ffff', // 47.66794, -122.40696  Ballard
+  };
+
+  /// Manually-confirmed on-trail hexes that the polyline-sampling +
+  /// neighbor-expansion phases miss (e.g. when the trail rides a hex
+  /// boundary or our reference polyline has a small gap).  Each entry is
+  /// added to both `_validIds` and `_coreIds` and surfaced visually via
+  /// `LaunchCorridor.displayHexes`.  Identified via in-app tap-to-log.
+  static const Set<String> _whitelist = {
+    '8928d54e263ffff', // 47.75828, -122.25588  Kenmore on-trail (north shore)
+  };
 
   static late final Set<String> _validIds;
 
@@ -86,6 +155,9 @@ class ValidTrailHexes {
 
   /// Whether [hexLower] is manually blacklisted (water / inaccessible).
   static bool isBlacklisted(String hexLower) => _blacklist.contains(hexLower);
+
+  /// Hexes manually whitelisted as on-trail (added to valid + core + display).
+  static Set<String> get whitelistedHexIds => _whitelist;
 
   /// Snapped guidance point on the trail polyline for [hexLower].
   /// Returns null if hex is not valid.
@@ -276,6 +348,23 @@ class ValidTrailHexes {
         if (coreGp != null) {
           _guidancePoints[nHex] = coreGp;
         }
+      }
+    }
+
+    // Phase 3: Manual whitelist — hexes the polyline + neighbor passes
+    // miss but the user has confirmed via tap-to-log are on the trail.
+    // Whitelist takes precedence over blacklist (defensive: a hex should
+    // never be in both, but whitelist wins to surface user intent).
+    for (final hex in _whitelist) {
+      _validIds.add(hex);
+      _coreIds.add(hex);
+      // Use the H3 cell centroid as the guidance point.
+      final cell = BigInt.parse(hex, radix: 16);
+      final boundary = _h3.cellToBoundary(cell);
+      if (boundary.isNotEmpty) {
+        final cLat = boundary.fold(0.0, (s, p) => s + p.lat) / boundary.length;
+        final cLng = boundary.fold(0.0, (s, p) => s + p.lon) / boundary.length;
+        _guidancePoints[hex] = (lat: cLat, lng: cLng);
       }
     }
   }

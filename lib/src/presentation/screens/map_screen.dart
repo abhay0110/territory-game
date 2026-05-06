@@ -26,6 +26,7 @@ import '../../../features/map/trail_progress_service.dart';
 import '../../../features/map/trail_section_progress_service.dart';
 import '../../data/services/capture_service.dart';
 import '../../data/services/account_upgrade_service.dart';
+import '../../data/services/display_name_service.dart';
 import '../../data/services/location_service.dart';
 import '../../data/services/map_event_log_service.dart';
 import '../../data/services/map_render_service.dart';
@@ -35,6 +36,7 @@ import '../../data/services/milestone_evaluator.dart';
 import '../../services/notification_service.dart';
 import '../../data/services/objective_engine_service.dart';
 import '../../data/services/recommendation_scoring_service.dart';
+import '../../data/services/trail_geometry_loader.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../../state/game_state.dart';
 import '../../state/game_state_notifier.dart';
@@ -424,7 +426,8 @@ class _AnimatedSessionSummaryState extends State<_AnimatedSessionSummary>
   }
 }
 
-class _MapScreenState extends ConsumerState<MapScreen> {
+class _MapScreenState extends ConsumerState<MapScreen>
+    with WidgetsBindingObserver {
   mb.MapboxMap? _map;
 
   final h3.H3 _h3 = const h3.H3Factory().load();
@@ -531,6 +534,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   ({double lat, double lng})? _recommendedGuidancePoint;
   int _recommendedGlowSyncToken = 0;
   bool _recommendedPulseOn = false;
+  // ── Active-hex glow (player's currently-occupied trail hex) ──
+  // Pulses only while a session is active AND the user stands on a trail
+  // hex.  Paused when the app is backgrounded to protect battery.
+  Timer? _activeHexPulseTimer;
+  String? _activeHexHaloHex;
+  bool _activeHexPulseOn = false;
   // Migrated to provider — getters for backward-compat.
   bool get _showPostCaptureGuidance =>
       ref.read(gameStateProvider).showPostCaptureGuidance;
@@ -570,6 +579,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Full-screen immersive: hide status & nav bars on the map.
     // User can swipe from edge to temporarily reveal them.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -643,6 +653,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   void dispose() {
     // Restore normal edge-to-edge mode when leaving the map.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
     _nearbyRefreshTimer?.cancel();
     _capturePulseTimer?.cancel();
@@ -653,6 +664,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     _compactHudIdleTimer?.cancel();
     _selectedTileTicker?.cancel();
     _recommendedTilePulseTimer?.cancel();
+    _activeHexPulseTimer?.cancel();
     _captureFeedbackTimer?.cancel();
     _postCaptureHintTimer?.cancel();
     _leaderboardRefreshTimer?.cancel();
@@ -855,10 +867,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     );
     // Always-on trail guide line — drawn once after the corridor lane so it
     // visually sits on top of the lane fill but under the hex polygons.
-    final waypoints = SeattleTrailDefinitions.burkeGilmanWaypoints
-        .map((p) => (lat: p.lat, lng: p.lng))
-        .toList(growable: false);
-    await _mapRenderService.drawTrailPolyline(waypoints);
+    // Source: high-fidelity OSM geometry bundled as a GeoJSON asset
+    // (see tool/fetch_trail_geometry.dart).  Gameplay geometry continues to
+    // flow from SeattleTrailDefinitions.burkeGilmanWaypoints unchanged.
+    final segments = await TrailGeometryLoader.instance.burkeGilmanRendered();
+    if (segments.isNotEmpty) {
+      await _mapRenderService.drawTrailPolyline(segments);
+    }
   }
 
   /// Fly camera to frame both user and nearest corridor entry so the user
@@ -1474,6 +1489,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     unawaited(
       _syncRecommendedTileGlow(currentLat: currentLat, currentLng: currentLng),
     );
+    _syncActiveHexHalo();
   }
 
   bool _isTileCapturable(GameTile tile) {
@@ -1753,20 +1769,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     // attention to random hexes they were merely passing.  Pre-session,
     // the only legitimate target is the launch corridor.
     if (preSession) {
-      if (_corridorEntryHex != null && _isHexCapturable(_corridorEntryHex!)) {
-        return _corridorEntryHex;
-      }
-      return null;
+      return _bestCapturableCorridorHex();
     }
 
     // When the user is far from the active corridor, constrain
     // recommendations to the corridor entry hex — do NOT fall through to
     // normal local tile recommendations.  This holds even after session start.
-    // Only point at the corridor entry if it's still capturable (otherwise
-    // we'd glow a hex the user already owns / a protected enemy hex).
-    if (_isFarFromCorridor && guidedMode && _corridorEntryHex != null) {
-      if (_isHexCapturable(_corridorEntryHex!)) return _corridorEntryHex;
-      return null;
+    // Pick the nearest CAPTURABLE corridor hex (skipping owned/protected).
+    if (_isFarFromCorridor && guidedMode) {
+      return _bestCapturableCorridorHex();
     }
 
     final reco = _bestRecommendedCapturableTile(
@@ -1776,13 +1787,46 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (reco != null) return reco;
 
     // Fallback: when no nearby capturable tiles, guide the user toward the
-    // active launch corridor entry — but only if it's still capturable.
-    if (guidedMode &&
-        _corridorEntryHex != null &&
-        _isHexCapturable(_corridorEntryHex!)) {
-      return _corridorEntryHex;
+    // nearest capturable corridor hex.
+    if (guidedMode) {
+      final entry = _bestCapturableCorridorHex();
+      if (entry != null) return entry;
     }
     return null;
+  }
+
+  /// Nearest corridor hex that the user can actually capture (not owned,
+  /// not protected, not blacklisted).  Falls back to `_corridorEntryHex`
+  /// only if it itself is capturable.
+  ///
+  /// Uses the live user position when available so the beacon advances
+  /// along the corridor as the user moves.  Skips blacklisted hexes via
+  /// the corridor's own filter (`orderedHexes` already excludes them at
+  /// the source via [LaunchCorridor.nearestEntry], but we re-check here
+  /// to be defensive against future changes).
+  String? _bestCapturableCorridorHex() {
+    final userLat = _lastLat;
+    final userLng = _lastLng;
+    String? best;
+    double bestD = double.infinity;
+    for (final hex in LaunchCorridor.orderedHexes) {
+      if (ValidTrailHexes.isBlacklisted(hex)) continue;
+      if (!_isHexCapturable(hex)) continue;
+      if (userLat == null || userLng == null) {
+        // No fix yet — first capturable hex is fine.
+        return hex;
+      }
+      try {
+        final cell = BigInt.parse(hex, radix: 16);
+        final c = _mapRenderService.cellCentroid(cell, hex);
+        final d = MapRenderService.haversineMeters(userLat, userLng, c.lat, c.lng);
+        if (d < bestD) {
+          bestD = d;
+          best = hex;
+        }
+      } catch (_) {}
+    }
+    return best;
   }
 
   /// True when [hex] is unknown to us (treat as neutral) or known and
@@ -1826,6 +1870,96 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         );
       },
     );
+  }
+
+  // ── Active-hex halo (B+C combined: pulse + breathe on player's tile) ──
+  //
+  // Gates:
+  //   • Session must be active (or in guided first-capture mode).
+  //   • Current hex must be on the trail corridor — we don't reward the
+  //     player visually for being off the playfield.
+  //   • App must be foreground — see [didChangeAppLifecycleState].
+  Future<void> _clearActiveHexHalo() async {
+    _activeHexPulseTimer?.cancel();
+    _activeHexPulseTimer = null;
+    _activeHexHaloHex = null;
+    _activeHexPulseOn = false;
+    await _mapRenderService.clearActiveHexHalo();
+  }
+
+  void _syncActiveHexHalo() {
+    if (!mounted) return;
+
+    final shouldGlow =
+        (_sessionActive || _isGuidedFirstCaptureMode) &&
+        _currentTile.isNotEmpty &&
+        LaunchCorridor.displayHexes.contains(_currentTile.toLowerCase());
+
+    if (!shouldGlow) {
+      if (_activeHexPulseTimer != null || _activeHexHaloHex != null) {
+        unawaited(_clearActiveHexHalo());
+      }
+      return;
+    }
+
+    final hexLower = _currentTile.toLowerCase();
+
+    // Same hex still under the player — keep the existing timer running so
+    // we don't restart the pulse phase on every GPS tick.
+    if (_activeHexHaloHex == hexLower && _activeHexPulseTimer != null) {
+      return;
+    }
+
+    _activeHexHaloHex = hexLower;
+    _activeHexPulseOn = false;
+    // Draw an immediate "off" frame so the halo appears instantly without
+    // waiting one full timer interval.
+    unawaited(
+      _mapRenderService.drawActiveHexHalo(hexLower, pulseOn: false),
+    );
+
+    _activeHexPulseTimer?.cancel();
+    _activeHexPulseTimer = Timer.periodic(
+      const Duration(milliseconds: 1200),
+      (_) {
+        final hex = _activeHexHaloHex;
+        if (hex == null) return;
+        _activeHexPulseOn = !_activeHexPulseOn;
+        unawaited(
+          _mapRenderService.drawActiveHexHalo(
+            hex,
+            pulseOn: _activeHexPulseOn,
+          ),
+        );
+      },
+    );
+  }
+
+  // ── App lifecycle: pause animation timers when backgrounded ──────────
+  //
+  // Both the recommended-tile glow and the active-hex halo run periodic
+  // platform-channel calls.  When the screen is locked or the user
+  // switches apps we stop them entirely to protect battery, then resume
+  // by re-evaluating both glow states on return to the foreground.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        _activeHexPulseTimer?.cancel();
+        _activeHexPulseTimer = null;
+        _recommendedTilePulseTimer?.cancel();
+        _recommendedTilePulseTimer = null;
+        break;
+      case AppLifecycleState.resumed:
+        if (!mounted) return;
+        _syncActiveHexHalo();
+        unawaited(_syncRecommendedTileGlow());
+        break;
+    }
   }
 
   Future<void> _syncRecommendedTileGlow({
@@ -2140,48 +2274,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       return;
     }
 
-    final emailController = TextEditingController();
     final result = await showDialog<String?>(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Save progress (debug)'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Hidden beta capability. Sends a confirmation email that '
-                'links this anonymous account to a permanent email login. '
-                'Captured hexes and stats are preserved.',
-                style: TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: emailController,
-                autofocus: true,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Email',
-                  hintText: 'you@example.com',
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(emailController.text),
-              child: const Text('Send link'),
-            ),
-          ],
-        );
-      },
+      builder: (ctx) => const _SaveProgressDialog(),
     );
-    emailController.dispose();
     if (result == null) return;
 
     final error = await upgradeService.requestEmailUpgrade(result);
@@ -2192,6 +2288,85 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           error == null
               ? 'Confirmation email sent. Tap the link to finish linking.'
               : 'Upgrade failed: $error',
+        ),
+      ),
+    );
+  }
+
+  /// Public capability: lets any player (anonymous or upgraded) claim a
+  /// public display name shown on leaderboards.  Backed by the
+  /// `profiles` table; RLS ensures users can only edit their own row.
+  Future<void> _showSetDisplayNameDialog() async {
+    final service = DisplayNameService(client: _captureService.supabaseClient);
+    final current = await service.getMine();
+    if (!mounted) return;
+
+    final controller = TextEditingController(text: current ?? '');
+    String? inlineError;
+
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSt) => AlertDialog(
+            title: const Text('Display name'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Shown on the trail leaderboard. 3–20 characters; '
+                  'letters, digits, _ and - only.',
+                  style: TextStyle(fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  maxLength: 20,
+                  decoration: InputDecoration(
+                    labelText: 'Name',
+                    hintText: 'e.g. trail_runner_42',
+                    errorText: inlineError,
+                  ),
+                  onChanged: (_) {
+                    if (inlineError != null) {
+                      setSt(() => inlineError = null);
+                    }
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final err = DisplayNameService.validate(controller.text);
+                  if (err != null) {
+                    setSt(() => inlineError = err);
+                    return;
+                  }
+                  Navigator.of(ctx).pop(controller.text.trim());
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    controller.dispose();
+    if (result == null) return;
+
+    final error = await service.setMine(result);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null ? 'Display name saved.' : 'Could not save: $error',
         ),
       ),
     );
@@ -2979,11 +3154,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 ..sort((a, b) => b.ownedTiles.compareTo(a.ownedTiles)))
               .first
         : null;
-    final trailSections = primaryTrail != null
-        ? _sectionProgress
-              .where((s) => s.section.trailId == primaryTrail.trail.id)
-              .toList()
-        : <TrailSectionProgress>[];
 
     // Build stat rows – mode-aware ordering with hero promotion.
     final stats = riding
@@ -3415,6 +3585,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       await _showSessionSummaryDialog(mode: mode);
       _updateCurrentObjective();
       await _clearRecommendedTileGlow();
+      await _clearActiveHexHalo();
       return;
     }
 
@@ -3447,6 +3618,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       context,
     ).showSnackBar(const SnackBar(content: Text('Session started ▶️')));
     _updateCurrentObjective();
+    _syncActiveHexHalo();
   }
 
   Color _ownershipBadgeColor(GameTile tile) {
@@ -3507,28 +3679,49 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   }
 
   Widget _buildGuidedModeMenuButton() {
-    return PopupMenuButton<HudPreference>(
+    return PopupMenuButton<String>(
       tooltip: 'HUD mode',
       onSelected: (value) {
-        unawaited(_setHudPreference(value));
+        switch (value) {
+          case 'guided':
+            unawaited(_setHudPreference(HudPreference.guided));
+            break;
+          case 'end_session':
+            unawaited(_toggleSession());
+            break;
+          case 'set_display_name':
+            unawaited(_showSetDisplayNameDialog());
+            break;
+          case 'debug_upgrade_account':
+            unawaited(_showHiddenAccountUpgradeDialog());
+            break;
+        }
       },
       itemBuilder: (context) => [
         // MVP: Guided is the visible primary mode.
         // Auto/Pro remain accessible via the "More actions" overflow menu.
-        const CheckedPopupMenuItem(
-          value: HudPreference.guided,
+        const CheckedPopupMenuItem<String>(
+          value: 'guided',
           checked: true,
           child: Text('Guided HUD'),
         ),
         if (_sessionActive) ...[
           const PopupMenuDivider(),
-          PopupMenuItem<HudPreference>(
-            onTap: () {
-              unawaited(_toggleSession());
-            },
-            child: const Text('End Session'),
+          const PopupMenuItem<String>(
+            value: 'end_session',
+            child: Text('End Session'),
           ),
         ],
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'set_display_name',
+          child: Text('Set display name…'),
+        ),
+        if (kDebugMode)
+          const PopupMenuItem<String>(
+            value: 'debug_upgrade_account',
+            child: Text('Save progress (debug)…'),
+          ),
       ],
       child: Container(
         width: 28,
@@ -3764,6 +3957,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                         case 'debug_upgrade_account':
                           unawaited(_showHiddenAccountUpgradeDialog());
                           break;
+                        case 'set_display_name':
+                          unawaited(_showSetDisplayNameDialog());
+                          break;
                       }
                     },
                     itemBuilder: (context) => [
@@ -3804,6 +4000,11 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                             .read(gameStateProvider)
                             .showPreviewEnemyTiles,
                         child: const Text('Preview rival hexes'),
+                      ),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(
+                        value: 'set_display_name',
+                        child: Text('Set display name…'),
                       ),
                       if (kDebugMode) ...[
                         const PopupMenuDivider(),
@@ -4514,6 +4715,73 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SaveProgressDialog extends StatefulWidget {
+  const _SaveProgressDialog();
+
+  @override
+  State<_SaveProgressDialog> createState() => _SaveProgressDialogState();
+}
+
+class _SaveProgressDialogState extends State<_SaveProgressDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onSubmit() {
+    Navigator.of(context).pop(_controller.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Save progress (debug)'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Hidden beta capability. Sends a confirmation email that '
+            'links this anonymous account to a permanent email login. '
+            'Captured hexes and stats are preserved.',
+            style: TextStyle(fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              hintText: 'you@example.com',
+            ),
+            onSubmitted: (_) => _onSubmit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _onSubmit,
+          child: const Text('Send link'),
+        ),
+      ],
     );
   }
 }

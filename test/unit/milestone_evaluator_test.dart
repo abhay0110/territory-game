@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:territory_game/models/trail_progress.dart';
-import 'package:territory_game/models/trail_section.dart';
-import 'package:territory_game/src/data/services/milestone_evaluator.dart';
+import 'package:HexTrail/models/trail_progress.dart';
+import 'package:HexTrail/models/trail_section.dart';
+import 'package:HexTrail/src/data/services/milestone_evaluator.dart';
 
 void main() {
   // ── Helpers ──────────────────────────────────────────────

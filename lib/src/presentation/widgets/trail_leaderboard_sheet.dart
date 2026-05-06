@@ -306,9 +306,9 @@ class _PlayerRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isTop3 = rank <= 3;
     final rankColor = switch (rank) {
-      1 => const Color(0xFFFFD700),
-      2 => const Color(0xFFC0C0C0),
-      3 => const Color(0xFFCD7F32),
+      1 => const Color(0xFFFFD700), // gold
+      2 => const Color(0xFFC0C0C0), // silver
+      3 => const Color(0xFFCD7F32), // bronze
       _ => GameUiTokens.textLow,
     };
 

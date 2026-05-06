@@ -9,6 +9,7 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/theme/game_ui_tokens.dart';
+import 'src/data/services/founder_badge_service.dart';
 import 'src/presentation/screens/home_screen.dart';
 import 'src/services/notification_service.dart';
 
@@ -63,7 +64,38 @@ Future<void> main() async {
     // Defer notification init until after first frame — must never block startup.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // Fire-and-forget. NotificationService.initialize() already swallows errors.
-      unawaited(NotificationService().initialize());
+      unawaited(() async {
+        await NotificationService().initialize();
+        // Proactively request notification permission + fetch FCM token at
+        // app launch.  Idempotent: Android only shows the system dialog once
+        // per install; subsequent calls just return the cached status.
+        // This decouples notification permission from the guided-first-capture
+        // state machine, which previously gated it (and could fail to fire
+        // if state arming timing was off).
+        await NotificationService().requestPermissionAndStore();
+      }());
+
+      // Founders Badge silent auto-claim.  Awards "Founder #N" to the
+      // first 100 unique users server-side.  Idempotent — safe to call
+      // on every launch; the RPC returns the existing row if already
+      // awarded, or NULL once the cap is reached.  UI is gated by
+      // [FeatureFlags.founderBadgeUiEnabled] (currently off).
+      //
+      // We listen to auth state instead of calling immediately because
+      // anon sign-in happens lazily inside CaptureService.ensureSignedIn().
+      // Once a user (anon or upgraded) appears, claim once and stop.
+      var founderClaimed = false;
+      Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+        if (founderClaimed) return;
+        if (data.session?.user.id == null) return;
+        founderClaimed = true;
+        unawaited(FounderBadgeService().claim());
+      });
+      // Cover the case where a session already exists from a previous launch.
+      if (Supabase.instance.client.auth.currentUser != null && !founderClaimed) {
+        founderClaimed = true;
+        unawaited(FounderBadgeService().claim());
+      }
     });
   }, (error, stack) {
     if (firebaseReady) {

@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/constants/seattle_trail_sections.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/trail_section.dart';
+import '../../data/services/display_name_service.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
 import '../widgets/player_stats_sheet.dart';
@@ -28,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController _pulseController;
   int _capturedTileCount = 0;
   Set<String> _capturedHexes = const {};
+  String? _displayName;
 
   @override
   void initState() {
@@ -38,6 +40,36 @@ class _HomeScreenState extends State<HomeScreen>
       duration: const Duration(milliseconds: 2600),
     )..repeat();
     _loadCapturedCount();
+    _loadDisplayName();
+  }
+
+  Future<void> _loadDisplayName() async {
+    try {
+      final name = await DisplayNameService().getMine();
+      if (mounted) setState(() => _displayName = name);
+    } catch (_) {}
+  }
+
+  Future<void> _showDisplayNameDialog() async {
+    final service = DisplayNameService();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => _DisplayNameDialog(initial: _displayName ?? ''),
+    );
+    if (result == null) return;
+
+    final error = await service.setMine(result);
+    if (!mounted) return;
+    if (error == null) {
+      setState(() => _displayName = result);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null ? 'Display name saved.' : 'Could not save: $error',
+        ),
+      ),
+    );
   }
 
   @override
@@ -116,6 +148,14 @@ class _HomeScreenState extends State<HomeScreen>
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
               child: Column(
                 children: [
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _DisplayNamePill(
+                      name: _displayName,
+                      onTap: _showDisplayNameDialog,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   Expanded(
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.only(bottom: 14),
@@ -1061,4 +1101,126 @@ class _RivalClusterPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _DisplayNamePill extends StatelessWidget {
+  final String? name;
+  final VoidCallback onTap;
+
+  const _DisplayNamePill({required this.name, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasName = name != null && name!.isNotEmpty;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.22),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              hasName ? Icons.person : Icons.person_outline,
+              size: 14,
+              color: GameUiTokens.textMid,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              hasName ? name! : 'Set display name',
+              style: GameUiText.meta(
+                color: hasName ? GameUiTokens.textHi : GameUiTokens.textMid,
+                size: 12,
+                weight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DisplayNameDialog extends StatefulWidget {
+  final String initial;
+  const _DisplayNameDialog({required this.initial});
+
+  @override
+  State<_DisplayNameDialog> createState() => _DisplayNameDialogState();
+}
+
+class _DisplayNameDialogState extends State<_DisplayNameDialog> {
+  late final TextEditingController _controller;
+  String? _inlineError;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initial);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onSave() {
+    final err = DisplayNameService.validate(_controller.text);
+    if (err != null) {
+      setState(() => _inlineError = err);
+      return;
+    }
+    Navigator.of(context).pop(_controller.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Display name'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Shown on the trail leaderboard. 3\u201320 characters; '
+            'letters, digits, _ and - only.',
+            style: TextStyle(fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLength: 20,
+            decoration: InputDecoration(
+              labelText: 'Name',
+              hintText: 'e.g. trail_runner_42',
+              errorText: _inlineError,
+            ),
+            onChanged: (_) {
+              if (_inlineError != null) {
+                setState(() => _inlineError = null);
+              }
+            },
+            onSubmitted: (_) => _onSave(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _onSave,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }

@@ -124,8 +124,16 @@ class LaunchCorridor {
     // Cache waypoints for distance checks.
     final waypoints = SeattleTrailDefinitions.burkeGilmanWaypoints;
 
-    final expanded = <String>{..._hexes};
+    final expanded = <String>{
+      for (final h in _hexes)
+        if (!ValidTrailHexes.isBlacklisted(h)) h,
+      // Manually whitelisted on-trail hexes that may not be in the
+      // corridor chain (e.g. trail rides a hex boundary).  Surfaces them
+      // visually so the highlighted lane has no gaps.
+      ...ValidTrailHexes.whitelistedHexIds,
+    };
     for (final hex in _hexes) {
+      if (ValidTrailHexes.isBlacklisted(hex)) continue;
       final cell = BigInt.parse(hex, radix: 16);
       final ring = _h3.gridDisk(cell, 1);
       for (final neighbor in ring) {
@@ -221,6 +229,9 @@ class LaunchCorridor {
     String? best;
     double bestD = double.infinity;
     for (final hex in _ordered) {
+      // Skip blacklisted hexes — they must not surface as a corridor-entry
+      // glow target either, since they are off-trail / inaccessible.
+      if (ValidTrailHexes.isBlacklisted(hex)) continue;
       final cell = BigInt.parse(hex, radix: 16);
       final c = cellCentroid(cell, hex);
       final d = haversine(lat, lng, c.lat, c.lng);

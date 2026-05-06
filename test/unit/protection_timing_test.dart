@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:territory_game/models/game_tile.dart';
-import 'package:territory_game/src/presentation/widgets/selected_tile_info_card.dart';
+import 'package:HexTrail/models/game_tile.dart';
+import 'package:HexTrail/src/presentation/widgets/selected_tile_info_card.dart';
 
 void main() {
   // ── Helpers ──────────────────────────────────────────────
@@ -152,8 +152,8 @@ void main() {
         ),
       );
 
-      expect(result, startsWith('Protected for'));
-      expect(result, contains('m'));
+      expect(result, startsWith('Your protection:'));
+      expect(result, matches(RegExp(r'\d{2}:\d{2}')));
     });
 
     test('own tile with null protection → "Capturable now"', () {

@@ -128,6 +128,21 @@ class NotificationService {
         storeToken(userId);
       }
     });
+
+    // Auth-state changes — persist token whenever a session appears.
+    // Covers the case where requestPermissionAndStore() ran at app launch
+    // before anonymous sign-in had completed (so storeToken silently
+    // no-op'd at that time).
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final userId = data.session?.user.id;
+      if (userId != null && _fcmToken != null) {
+        dev.log(
+          'Auth state changed (uid=$userId) — persisting FCM token',
+          name: 'NotificationService',
+        );
+        storeToken(userId);
+      }
+    });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
@@ -153,6 +168,28 @@ class NotificationService {
       'Permission status: ${settings.authorizationStatus}',
       name: 'NotificationService',
     );
+
+    // Android 13+ also requires POST_NOTIFICATIONS for the local-notification
+    // plugin. firebase_messaging's requestPermission does not cover this for
+    // local (non-FCM) notifications such as the scheduled "vulnerable" alert.
+    try {
+      await _ensureLocalNotifInit();
+      final androidImpl = _localNotifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      if (androidImpl != null) {
+        final granted = await androidImpl.requestNotificationsPermission();
+        dev.log(
+          'Android POST_NOTIFICATIONS granted: $granted',
+          name: 'NotificationService',
+        );
+      }
+    } catch (e) {
+      dev.log(
+        'Android local-notif permission request failed: $e',
+        name: 'NotificationService',
+      );
+    }
   }
 
   Future<void> _fetchToken() async {

@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:territory_game/models/game_tile.dart';
-import 'package:territory_game/models/trail_progress.dart';
-import 'package:territory_game/models/trail_section.dart';
-import 'package:territory_game/src/data/services/objective_engine_service.dart';
+import 'package:HexTrail/models/game_tile.dart';
+import 'package:HexTrail/models/trail_progress.dart';
+import 'package:HexTrail/models/trail_section.dart';
+import 'package:HexTrail/src/data/services/objective_engine_service.dart';
 
 void main() {
   late ObjectiveEngineService engine;
@@ -224,7 +224,7 @@ void main() {
         sectionProgress: [],
       );
 
-      expect(result.title, contains('Move to a nearby open tile'));
+      expect(result.title, contains('Move to a nearby open hex'));
     });
 
     test('one-tile-from-contest objective takes priority', () {
@@ -248,7 +248,7 @@ void main() {
         ],
       );
 
-      expect(result.title, contains('One more tile contests'));
+      expect(result.title, contains('One more hex contests'));
       expect(result.detail, contains('Downtown'));
     });
 
@@ -327,7 +327,7 @@ void main() {
         ],
       );
 
-      expect(result.title, contains('One more tile contests'));
+      expect(result.title, contains('One more hex contests'));
     });
 
     test('isOwnedByPlayer via capturedHexes works for mine ownership', () {
@@ -345,7 +345,7 @@ void main() {
       );
 
       // Should still go through the owned-tile path (State 3)
-      expect(result.title, contains('Move to a nearby open tile'));
+      expect(result.title, contains('Move to a nearby open hex'));
     });
   });
 
@@ -462,7 +462,7 @@ void main() {
       );
 
       // Should NOT fire one-tile-from-contest because bestNextTileH3 is null
-      expect(result.title, isNot(contains('One more tile contests')));
+      expect(result.title, isNot(contains('One more hex contests')));
     });
 
     test('streak extension only fires for extendStreak reason', () {

@@ -17,12 +17,14 @@ class MapRenderService {
   mb.MapboxMap? _map;
   mb.PolygonAnnotationManager? _corridorMgr;
   mb.PolylineAnnotationManager? _trailLineMgr;
+  mb.PolygonAnnotationManager? _currentHaloMgr;
   mb.PolygonAnnotationManager? _currentMgr;
   mb.PolygonAnnotationManager? _capturedMgr;
   mb.PolygonAnnotationManager? _selectionMgr;
   mb.PolygonAnnotationManager? _recommendationHaloMgr;
   mb.PolygonAnnotationManager? _recommendationMgr;
   mb.PolygonAnnotation? _currentPoly;
+  mb.PolygonAnnotation? _currentHaloPoly;
   mb.PolygonAnnotation? _selectionPoly;
   mb.PolygonAnnotation? _recommendationHaloPoly;
   mb.PolygonAnnotation? _recommendationPoly;
@@ -131,6 +133,10 @@ class MapRenderService {
     _corridorMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     // Trail polyline sits on top of the corridor lane but under tiles.
     _trailLineMgr ??= await _map!.annotations.createPolylineAnnotationManager();
+    // Active-hex halo sits BENEATH the current hex so the main fill stays
+    // crisp on top of the pulsing glow wash.
+    _currentHaloMgr ??= await _map!.annotations
+        .createPolygonAnnotationManager();
     _currentMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _capturedMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     _selectionMgr ??= await _map!.annotations.createPolygonAnnotationManager();
@@ -513,32 +519,38 @@ class MapRenderService {
   static const double _trailLineBlur = 1.5;
 
   /// Draws a thin glowing polyline along the active trail.  Idempotent:
-  /// subsequent calls with the same waypoints are no-ops.
+  /// subsequent calls are no-ops once drawn.
   ///
-  /// The polyline anchors the player's mental model so the recommended
-  /// hex always reads as "the next step on the line" rather than a hex
-  /// floating in space.
+  /// Accepts one or more disjoint segments; each segment is rendered as its
+  /// own polyline so we never bridge a long gap with a straight chord (e.g.
+  /// across water at sharp waterfront curves).  The polyline anchors the
+  /// player's mental model so the recommended hex always reads as "the next
+  /// step on the line" rather than a hex floating in space.
   Future<void> drawTrailPolyline(
-    List<({double lat, double lng})> waypoints,
+    List<List<({double lat, double lng})>> segments,
   ) async {
-    if (_trailLineDrawn || waypoints.length < 2) return;
+    if (_trailLineDrawn) return;
+    final usable = segments.where((s) => s.length >= 2).toList();
+    if (usable.isEmpty) return;
     await _ensureManagers();
     if (_trailLineMgr == null) return;
 
     try {
-      final coordinates = waypoints
-          .map((p) => mb.Position(p.lng, p.lat))
-          .toList(growable: false);
-      final opts = mb.PolylineAnnotationOptions(
-        geometry: mb.LineString(coordinates: coordinates),
-        lineColor: _trailLineColor,
-        lineWidth: _trailLineWidth,
-        lineOpacity: _trailLineOpacity,
-        lineBlur: _trailLineBlur,
-        lineJoin: mb.LineJoin.ROUND,
-      );
-      final line = await _trailLineMgr!.create(opts);
-      _trailLines.add(line);
+      for (final seg in usable) {
+        final coordinates = seg
+            .map((p) => mb.Position(p.lng, p.lat))
+            .toList(growable: false);
+        final opts = mb.PolylineAnnotationOptions(
+          geometry: mb.LineString(coordinates: coordinates),
+          lineColor: _trailLineColor,
+          lineWidth: _trailLineWidth,
+          lineOpacity: _trailLineOpacity,
+          lineBlur: _trailLineBlur,
+          lineJoin: mb.LineJoin.ROUND,
+        );
+        final line = await _trailLineMgr!.create(opts);
+        _trailLines.add(line);
+      }
       _trailLineDrawn = true;
     } catch (error, stackTrace) {
       if (kDebugMode) {
@@ -630,11 +642,58 @@ class MapRenderService {
     _recommendationPoly = null;
   }
 
+  // ── Active-hex halo (player's currently-occupied hex) ──────────────────
+  //
+  // Glow wash drawn beneath the current-hex annotation.  The map screen
+  // toggles [pulseOn] on a slow timer (~1Hz) to produce a calm breathing
+  // effect.  Cheap: one delete + one create per tick on a single annotation.
+  // Caller is responsible for gating (trail-only, session-active, foreground).
+  Future<void> drawActiveHexHalo(
+    String h3IndexLower, {
+    required bool pulseOn,
+  }) async {
+    await _ensureManagers();
+    if (_currentHaloMgr == null) return;
+
+    if (_currentHaloPoly != null) {
+      try {
+        await _currentHaloMgr!.delete(_currentHaloPoly!);
+      } catch (_) {}
+      _currentHaloPoly = null;
+    }
+
+    try {
+      final cell = BigInt.parse(h3IndexLower, radix: 16);
+      // Soft green glow that breathes between barely-visible and warm.
+      // Same hue family as the player-owned tile fill so it reads as
+      // "your standing tile" rather than as an alert/recommendation.
+      final opacity = pulseOn ? 0.55 : 0.20;
+      final options = _polygonOptionsForCell(
+        cell,
+        fillColor: _colorMineProtected,
+        outlineColor: _colorMineProtected, // blend outline into fill
+        opacity: opacity,
+      );
+      _currentHaloPoly = await _currentHaloMgr!.create(options);
+    } catch (_) {
+      // Swallow — halo is purely decorative; main render path is unaffected.
+    }
+  }
+
+  Future<void> clearActiveHexHalo() async {
+    if (_currentHaloPoly == null || _currentHaloMgr == null) return;
+    try {
+      await _currentHaloMgr!.delete(_currentHaloPoly!);
+    } catch (_) {}
+    _currentHaloPoly = null;
+  }
+
   void dispose() {
     _recommendationHaloPoly = null;
     _recommendationPoly = null;
     _selectionPoly = null;
     _currentPoly = null;
+    _currentHaloPoly = null;
     _capturedPolyByHex.clear();
     _visibleCapturedHex.clear();
   }

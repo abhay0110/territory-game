@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Active Hex 3D Effects — Mockup</title>
+<style>
+  body {
+    background: #1a2332;
+    color: #e8eef7;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #8aa0bd; font-size: 12px; margin-bottom: 24px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    max-width: 980px;
+  }
+  .card {
+    background: #233148;
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid #2f4263;
+  }
+  .card h2 {
+    font-size: 13px;
+    margin: 0 0 4px;
+    color: #cfe0fb;
+    letter-spacing: 0.3px;
+  }
+  .card p { font-size: 11px; color: #8aa0bd; margin: 0 0 10px; }
+  .stage {
+    background:
+      radial-gradient(ellipse at center, #2d4f3a 0%, #1f3a2c 60%, #15281f 100%);
+    border-radius: 8px;
+    height: 280px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  /* Faint background hexes */
+  .bg-hex {
+    fill: rgba(255,255,255,0.03);
+    stroke: rgba(255,255,255,0.06);
+    stroke-width: 1;
+  }
+  .neighbor-hex {
+    fill: rgba(140, 200, 255, 0.06);
+    stroke: rgba(140, 200, 255, 0.18);
+    stroke-width: 1;
+  }
+  .captured-hex {
+    fill: rgba(74, 168, 255, 0.28);
+    stroke: rgba(74, 168, 255, 0.65);
+    stroke-width: 1.2;
+  }
+
+  /* === Effect 1: Drop shadow halo (E) === */
+  .shadow {
+    fill: rgba(0,0,0,0.55);
+    filter: blur(6px);
+  }
+
+  /* === Effect 2: Pulse ring (B) === */
+  @keyframes pulseRing {
+    0%   { transform: scale(1.0);  opacity: 0.85; }
+    100% { transform: scale(1.45); opacity: 0.0; }
+  }
+  .pulse-ring {
+    fill: none;
+    stroke: #4aa8ff;
+    stroke-width: 2.5;
+    transform-origin: center;
+    transform-box: fill-box;
+    animation: pulseRing 1.2s ease-out infinite;
+  }
+  .pulse-ring.delay { animation-delay: 0.6s; }
+
+  /* === Effect 3: Brightness breathe (C) === */
+  @keyframes breathe {
+    0%, 100% { fill-opacity: 0.55; stroke-opacity: 0.95; }
+    50%      { fill-opacity: 0.85; stroke-opacity: 1.0; }
+  }
+  .active-fill {
+    fill: #4aa8ff;
+    stroke: #ffffff;
+    stroke-width: 2;
+    animation: breathe 1.2s ease-in-out infinite;
+  }
+
+  /* Reference (no effects) for comparison */
+  .ref-fill {
+    fill: rgba(74, 168, 255, 0.55);
+    stroke: #ffffff;
+    stroke-width: 1.5;
+  }
+
+  .legend {
+    margin-top: 28px;
+    background: #233148;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #2f4263;
+    max-width: 980px;
+  }
+  .legend h3 { font-size: 13px; margin: 0 0 8px; color: #cfe0fb; }
+  .legend ul { font-size: 12px; color: #b8c8e0; padding-left: 18px; line-height: 1.6; }
+  .legend code { background: #15212f; padding: 1px 6px; border-radius: 4px; color: #ffd58a; font-size: 11px; }
+</style>
+</head>
+<body>
+  <h1>HexTrail — Active hex 3D-feel mockup</h1>
+  <p class="sub">All effects use existing PolygonAnnotation API. ~1Hz update rate to match battery budget.</p>
+
+  <div class="grid">
+    <!-- BASELINE -->
+    <div class="card">
+      <h2>0. Current (baseline)</h2>
+      <p>Today: flat fill, white outline, identical to captured hexes.</p>
+      <div class="stage">
+        <svg width="260" height="260" viewBox="-130 -130 260 260">
+          <!-- background hexes -->
+          <g>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(80,0)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-80,0)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(40,-70)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,70)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,-70)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(40,70)"/>
+          </g>
+          <!-- active (no effects) -->
+          <polygon class="ref-fill" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- E: SHADOW ONLY -->
+    <div class="card">
+      <h2>E. Drop shadow halo (static)</h2>
+      <p>Single offset blurred polygon underneath. Zero animation cost. Adds depth.</p>
+      <div class="stage">
+        <svg width="260" height="260" viewBox="-130 -130 260 260">
+          <g>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(80,0)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-80,0)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,-70)"/>
+          </g>
+          <!-- shadow offset down/right -->
+          <polygon class="shadow" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(4,8)"/>
+          <polygon class="ref-fill" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- B: PULSE RING -->
+    <div class="card">
+      <h2>B. Pulse ring (1Hz)</h2>
+      <p>Outline polygon scales + fades outward. Two staggered rings for richness.</p>
+      <div class="stage">
+        <svg width="260" height="260" viewBox="-130 -130 260 260">
+          <g>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(80,0)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,-70)"/>
+          </g>
+          <polygon class="pulse-ring" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+          <polygon class="pulse-ring delay" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+          <polygon class="ref-fill" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- B + C + E COMBINED — RECOMMENDED -->
+    <div class="card" style="border-color:#4aa8ff;">
+      <h2 style="color:#9bd0ff;">★ Recommended: B + C + E combined</h2>
+      <p>Drop shadow + breathing fill + slow outward pulse ring. ~1% extra battery.</p>
+      <div class="stage">
+        <svg width="260" height="260" viewBox="-130 -130 260 260">
+          <g>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(80,0)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-80,0)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(40,-70)"/>
+            <polygon class="bg-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,70)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(-40,-70)"/>
+            <polygon class="captured-hex" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(40,70)"/>
+          </g>
+          <polygon class="shadow" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" transform="translate(4,8)"/>
+          <polygon class="pulse-ring" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+          <polygon class="pulse-ring delay" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+          <polygon class="active-fill" points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>Implementation notes</h3>
+    <ul>
+      <li><b>Pulse ring</b>: new <code>_currentHaloMgr</code> PolygonAnnotationManager. Timer at 1.2s. Each tick: delete + re-create halo polygon at 1.0× → 1.45× scale (interpolated in 4 steps to fake smoothness, or just two-state on/off like the existing recommended-tile pulse).</li>
+      <li><b>Breathing fill</b>: free — same timer toggles <code>_currentPoly</code>'s opacity 0.55 ↔ 0.85 by recreating with alternating opacity values.</li>
+      <li><b>Drop shadow</b>: single static polygon redrawn only when <code>_currentTile</code> changes. Offset ~4px right, ~8px down. Black @ 55% opacity. Zero per-frame cost.</li>
+      <li><b>Lifecycle hardening</b>: add <code>WidgetsBindingObserver</code> to pause timer on <code>AppLifecycleState.paused</code>. Apply same pause to existing <code>_recommendedTilePulseTimer</code> as a free win.</li>
+      <li><b>Battery budget</b>: 1Hz delete+create on a single polygon = ~2 platform-channel calls/sec. Existing recommendation pulse already runs at this rate without complaints. Estimated incremental drain: <b>~1% per active hour</b>.</li>
+    </ul>
+  </div>
+</body>
+</html>

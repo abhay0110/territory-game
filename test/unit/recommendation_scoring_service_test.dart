@@ -1,8 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:territory_game/models/game_tile.dart';
-import 'package:territory_game/models/trail_progress.dart';
-import 'package:territory_game/models/trail_section.dart';
-import 'package:territory_game/src/data/services/recommendation_scoring_service.dart';
+import 'package:HexTrail/models/game_tile.dart';
+import 'package:HexTrail/models/trail_section.dart';
+import 'package:HexTrail/src/data/services/recommendation_scoring_service.dart';
 
 void main() {
   // ── Helpers ──────────────────────────────────────────────
