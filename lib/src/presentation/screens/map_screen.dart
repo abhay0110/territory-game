@@ -859,7 +859,19 @@ class _MapScreenState extends ConsumerState<MapScreen>
   }
 
   Future<void> _drawCorridorLaneIfNeeded() async {
-    if (_corridorLaneRequested || _map == null) return;
+    // iOS race fix: the service-level Mapbox handle is only attached inside
+    // `onStyleLoadedListener` (see `_mapPostStyleSetupDone`).  An early call
+    // from `_resolveCorridorEntry` (bootstrap GPS) used to flip the request
+    // flag while the underlying `drawCorridorLane`/`drawTrailPolyline` calls
+    // silently no-op'd because their managers had not been created yet —
+    // leaving the corridor lane and trail polyline missing on iPhone.
+    // Gate on the post-style-load flag so the bootstrap call cleanly defers
+    // and the post-style hook actually performs the draw.
+    if (_corridorLaneRequested ||
+        _map == null ||
+        !_mapPostStyleSetupDone) {
+      return;
+    }
     _corridorLaneRequested = true;
     // Use the wider display set for visual continuity; playable set is unchanged.
     await _mapRenderService.drawCorridorLane(
