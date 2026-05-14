@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -9,17 +10,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/notification_service.dart';
 import '../../../core/constants/game_rules.dart';
 import '../../../models/game_tile.dart';
+import 'streak_service.dart';
 
 /// Handles capture persistence and Supabase sync for H3 tile captures.
 class CaptureService {
   CaptureService({
     required this.supabaseClient,
     required this.h3Resolution,
-  }) : _h3 = const h3lib.H3Factory().load();
+    StreakService? streakService,
+  })  : _streakService = streakService ?? StreakService(),
+        _h3 = const h3lib.H3Factory().load();
 
   final SupabaseClient supabaseClient;
   final int h3Resolution;
   final h3lib.H3 _h3;
+  final StreakService _streakService;
 
   static const _prefsKeyCaptured = 'captured_h3_cells_res9_v1';
 
@@ -366,6 +371,12 @@ class CaptureService {
         );
         synced = true;
         debugPrint('[Capture] ✅ Supabase sync OK for $normalizedHex');
+
+        // Record streak day-of-capture (Phase 1.1 — runs regardless of
+        // FeatureFlags.streakSystemEnabled so the count is meaningful
+        // when the UI flag flips on later).  Fire-and-forget: must
+        // never block the capture path.
+        unawaited(_streakService.recordCaptureToday());
 
         // ── Gameplay notifications (fire-and-forget) ──
         // Trigger 1: notify previous owner their tile was taken.
