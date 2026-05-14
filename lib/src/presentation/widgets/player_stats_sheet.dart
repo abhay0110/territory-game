@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/feature_flags.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../data/services/player_stats_service.dart';
+import '../../data/services/streak_service.dart';
 import 'frosted_overlay_card.dart';
 
 /// Opens the player stats bottom sheet.
@@ -24,6 +26,8 @@ class _PlayerStatsSheet extends StatefulWidget {
 
 class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
   PlayerStats? _stats;
+  StreakState? _streak;
+  bool _showFreezeBanner = false;
   bool _loading = true;
 
   @override
@@ -33,10 +37,27 @@ class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
   }
 
   Future<void> _load() async {
-    final stats = await PlayerStatsService().loadStats();
+    final statsFuture = PlayerStatsService().loadStats();
+    // Streak load is best-effort: a failure here must not blank out
+    // the whole sheet (the streak pill is a header decoration, not
+    // load-critical).
+    StreakState? streak;
+    bool banner = false;
+    if (FeatureFlags.streakSystemEnabled) {
+      try {
+        final svc = StreakService();
+        streak = await svc.readCurrentState();
+        banner = await svc.consumeFreezeBanner();
+      } catch (_) {
+        streak = null;
+      }
+    }
+    final stats = await statsFuture;
     if (!mounted) return;
     setState(() {
       _stats = stats;
+      _streak = streak;
+      _showFreezeBanner = banner;
       _loading = false;
     });
   }
@@ -83,6 +104,11 @@ class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
                         ),
                       ),
                     ),
+                    if (_StreakPill.shouldShow(_streak, _showFreezeBanner))
+                      _StreakPill(
+                        state: _streak!,
+                        showFreezeUsedBanner: _showFreezeBanner,
+                      ),
                   ],
                 ),
               ),
@@ -309,6 +335,76 @@ class _StatRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Compact streak indicator that lives in the Stats sheet header.
+/// Replaces the standalone home-screen StreakCard so the home stays
+/// focused on the battle CTA + leaderboard hooks.
+///
+/// Visibility rule (see [shouldShow]): only render when there is an
+/// active streak OR a one-shot freeze-used banner is pending. Avoids
+/// surfacing a 0-day pill that reads as failure on fresh installs.
+class _StreakPill extends StatelessWidget {
+  final StreakState state;
+  final bool showFreezeUsedBanner;
+
+  const _StreakPill({
+    required this.state,
+    required this.showFreezeUsedBanner,
+  });
+
+  static bool shouldShow(StreakState? state, bool showFreezeUsedBanner) {
+    if (state == null) return false;
+    if (state.currentStreak > 0) return true;
+    if (showFreezeUsedBanner) return true;
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Defensive: if shouldShow logic ever drifts from build, render
+    // nothing rather than a confusing "0-day" pill.
+    if (!shouldShow(state, showFreezeUsedBanner)) {
+      return const SizedBox.shrink();
+    }
+
+    final accent = showFreezeUsedBanner
+        ? const Color(0xFF60A5FA) // blue: freeze-used warning tone
+        : const Color(0xFFF59E0B); // amber: active streak tone
+
+    final label = showFreezeUsedBanner
+        ? '🧊 freeze used'
+        : state.freezesAvailable > 0
+            ? '🔥 ${state.currentStreak} • 🧊 1'
+            : '🔥 ${state.currentStreak}';
+
+    return Tooltip(
+      message: showFreezeUsedBanner
+          ? 'Streak freeze used — capture today to keep your '
+              '${state.currentStreak}-day streak.'
+          : 'Current streak: ${state.currentStreak} day'
+              '${state.currentStreak == 1 ? '' : 's'}'
+              '${state.longestEver > state.currentStreak ? ' • best ${state.longestEver}' : ''}'
+              '${state.freezesAvailable > 0 ? ' • 1 freeze banked' : ''}',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: accent.withOpacity(0.16),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: accent.withOpacity(0.55)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: accent,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.3,
+          ),
+        ),
+      ),
     );
   }
 }

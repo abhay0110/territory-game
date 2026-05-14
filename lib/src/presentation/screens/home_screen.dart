@@ -7,15 +7,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/constants/seattle_trail_sections.dart';
-import '../../../core/feature_flags.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/trail_section.dart';
 import '../../data/services/display_name_service.dart';
-import '../../data/services/streak_service.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
 import '../widgets/player_stats_sheet.dart';
-import '../widgets/streak_card.dart';
 import '../widgets/territory_pressure_card.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
 import 'map_screen.dart';
@@ -35,9 +32,6 @@ class _HomeScreenState extends State<HomeScreen>
   Set<String> _capturedHexes = const {};
   String? _displayName;
   TrailLeaderboardSnapshot? _leaderboardSnapshot;
-  StreakState? _streakState;
-  bool _showFreezeBanner = false;
-  final StreakService _streakService = StreakService();
 
   @override
   void initState() {
@@ -50,22 +44,6 @@ class _HomeScreenState extends State<HomeScreen>
     _loadCapturedCount();
     _loadDisplayName();
     _loadLeaderboardSnapshot();
-    _loadStreakState();
-  }
-
-  Future<void> _loadStreakState() async {
-    try {
-      final state = await _streakService.readCurrentState();
-      final showBanner = await _streakService.consumeFreezeBanner();
-      if (mounted) {
-        setState(() {
-          _streakState = state;
-          _showFreezeBanner = showBanner;
-        });
-      }
-    } catch (_) {
-      // Fail silent — streak card collapses to SizedBox.shrink.
-    }
   }
 
   Future<void> _loadLeaderboardSnapshot() async {
@@ -113,7 +91,6 @@ class _HomeScreenState extends State<HomeScreen>
     if (state == AppLifecycleState.resumed) {
       _loadCapturedCount();
       _loadLeaderboardSnapshot();
-      _loadStreakState();
     }
   }
 
@@ -211,14 +188,6 @@ class _HomeScreenState extends State<HomeScreen>
                           _StatsTeaser(
                             onTap: () => showPlayerStatsSheet(context),
                           ),
-                          if (FeatureFlags.streakSystemEnabled &&
-                              _streakState != null) ...[
-                            const SizedBox(height: 12),
-                            StreakCard(
-                              state: _streakState,
-                              showFreezeUsedBanner: _showFreezeBanner,
-                            ),
-                          ],
                           if (_leaderboardSnapshot != null) ...[
                             const SizedBox(height: 12),
                             TerritoryPressureCard(

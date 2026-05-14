@@ -69,6 +69,45 @@ class IdentityLinkResult {
       IdentityLinkResult._(success: false, errorMessage: message);
 }
 
+/// Pure decision over the four signals collected before/after
+/// `signInWithIdToken`.  Extracted from `_completeWithIdToken` so the
+/// data-loss-vs-recovery branch is unit-testable without mocking the
+/// entire Supabase client.  See `account_swap_data_loss.md` for the
+/// hard rules this enforces.
+@visibleForTesting
+enum SwapGuardDecision {
+  /// Identity was attached to the same uid (link path) — success.
+  linked,
+
+  /// Sign-in resolved to a different existing uid AND the local cache
+  /// was empty (recovery path) — success, swap allowed.
+  recoverySwap,
+
+  /// User was already permanent before the call (re-sign-in) — success.
+  reSignedIn,
+
+  /// Sign-in swapped uids on a session that still holds local captures —
+  /// MUST refuse, sign back out locally, surface a recovery error.
+  refuseDataLoss,
+}
+
+@visibleForTesting
+SwapGuardDecision evaluateSwapGuard({
+  required bool wasAnon,
+  required String? priorUid,
+  required String? newUid,
+  required int localProgressCount,
+}) {
+  // Authoritative behavior — keep in sync with rules in
+  // /memories/repo/account_swap_data_loss.md.
+  if (!wasAnon) return SwapGuardDecision.reSignedIn;
+  final swapped =
+      priorUid != null && newUid != null && newUid != priorUid;
+  if (!swapped) return SwapGuardDecision.linked;
+  if (localProgressCount > 0) return SwapGuardDecision.refuseDataLoss;
+  return SwapGuardDecision.recoverySwap;
+}
+
 /// Links an existing anonymous Supabase user to a permanent Google/Apple
 /// identity (preserving the same `auth.users.id`), or signs in a fresh
 /// install to an already-linked account.
@@ -238,29 +277,40 @@ class IdentityLinkService {
       );
 
       final newUid = _client.auth.currentUser?.id;
-      final swapped = wasAnon &&
-          priorUid != null &&
-          newUid != null &&
-          newUid != priorUid;
-      if (swapped && localProgressCount > 0) {
-        // Surprise swap on a rich anon session.  Sign back out so the
-        // device is not stranded on the wrong (other) account, then
-        // surface a recoverable error.  Local captures stay in prefs;
-        // the original anon uid is still intact server-side, only its
-        // session token is gone.
-        try {
-          await _client.auth.signOut(scope: SignOutScope.local);
-        } catch (_) {}
-        return IdentityLinkResult.error(
-          'This account is already linked to a different HexTrail '
-          'profile. To avoid losing your current progress we did not '
-          'switch accounts. Contact support to merge them.',
-        );
+      final decision = evaluateSwapGuard(
+        wasAnon: wasAnon,
+        priorUid: priorUid,
+        newUid: newUid,
+        localProgressCount: localProgressCount,
+      );
+      switch (decision) {
+        case SwapGuardDecision.refuseDataLoss:
+          // Surprise swap on a rich anon session.  Sign back out so the
+          // device is not stranded on the wrong (other) account, then
+          // surface a recoverable error.  Local captures stay in prefs;
+          // the original anon uid is still intact server-side, only its
+          // session token is gone.
+          try {
+            await _client.auth.signOut(scope: SignOutScope.local);
+          } catch (_) {}
+          return IdentityLinkResult.error(
+            'This account is already linked to a different HexTrail '
+            'profile. To avoid losing your current progress we did not '
+            'switch accounts. Contact support to merge them.',
+          );
+        case SwapGuardDecision.linked:
+          return IdentityLinkResult.linked();
+        case SwapGuardDecision.recoverySwap:
+          // Recovery path: anon session was clean (localProgressCount == 0),
+          // signed into the existing user that already owns the OAuth
+          // identity.  All FK-tied progress (captures/badges/streak/
+          // leaderboard) on that uid is restored automatically by the
+          // map_screen auth-state listener that pulls fresh from
+          // user_tile_captures + reconciles the per-device cache.
+          return IdentityLinkResult.signedIn();
+        case SwapGuardDecision.reSignedIn:
+          return IdentityLinkResult.signedIn();
       }
-
-      // Either no swap, or swap into existing account from a clean local
-      // session (recovery path).  Both are success cases.
-      return wasAnon ? IdentityLinkResult.linked() : IdentityLinkResult.signedIn();
     } on AuthException catch (e) {
       if (kDebugMode) debugPrint('[IdentityLink] AuthException: ${e.message}');
       return IdentityLinkResult.error(e.message);

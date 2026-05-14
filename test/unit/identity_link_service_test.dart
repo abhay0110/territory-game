@@ -62,4 +62,101 @@ void main() {
       );
     });
   });
+
+  group('evaluateSwapGuard (data-loss vs recovery branches)', () {
+    // Authoritative behavior locked in by these cases. See
+    // /memories/repo/account_swap_data_loss.md.
+
+    test('non-anon re-sign-in => reSignedIn', () {
+      final d = evaluateSwapGuard(
+        wasAnon: false,
+        priorUid: 'permanent-uid',
+        newUid: 'permanent-uid',
+        localProgressCount: 99,
+      );
+      expect(d, SwapGuardDecision.reSignedIn);
+    });
+
+    test('anon, same uid (link path), 0 captures => linked', () {
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-A',
+        newUid: 'anon-A',
+        localProgressCount: 0,
+      );
+      expect(d, SwapGuardDecision.linked);
+    });
+
+    test('anon, same uid (link path), many captures => linked (no swap)', () {
+      // Critical: when uid does not change, captures count is irrelevant.
+      // Same anon uid + new identity attached = the happy "Save your
+      // progress" path; user keeps every hex they own.
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-A',
+        newUid: 'anon-A',
+        localProgressCount: 42,
+      );
+      expect(d, SwapGuardDecision.linked);
+    });
+
+    test(
+        'anon, uid changed (swap), 0 captures => recoverySwap '
+        '(fresh-install / reinstall recovery flow MUST be allowed)', () {
+      // This is the core of "sign in with my existing email pulls all
+      // my data from the server". Previously broken when an over-eager
+      // refusal blocked recovery — see the May-10 incident.
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-fresh',
+        newUid: 'permanent-existing',
+        localProgressCount: 0,
+      );
+      expect(d, SwapGuardDecision.recoverySwap);
+    });
+
+    test(
+        'anon, uid changed (swap), 1 capture => refuseDataLoss '
+        '(strands local progress on orphaned anon uid)', () {
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-rich',
+        newUid: 'permanent-other',
+        localProgressCount: 1,
+      );
+      expect(d, SwapGuardDecision.refuseDataLoss);
+    });
+
+    test(
+        'anon, uid changed (swap), many captures => refuseDataLoss '
+        '(same as the May-10 production incident)', () {
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-rich',
+        newUid: 'permanent-other',
+        localProgressCount: 25,
+      );
+      expect(d, SwapGuardDecision.refuseDataLoss);
+    });
+
+    test('anon, priorUid null => treated as link (no swap)', () {
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: null,
+        newUid: 'new-uid',
+        localProgressCount: 0,
+      );
+      expect(d, SwapGuardDecision.linked);
+    });
+
+    test('anon, newUid null (post-call session lost) => treated as link', () {
+      final d = evaluateSwapGuard(
+        wasAnon: true,
+        priorUid: 'anon-A',
+        newUid: null,
+        localProgressCount: 0,
+      );
+      expect(d, SwapGuardDecision.linked);
+    });
+  });
 }
