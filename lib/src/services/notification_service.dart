@@ -28,6 +28,25 @@ class TileLostEvent {
   final DateTime receivedAt;
 }
 
+/// Broadcast notifier for inbound `weekly_recap` FCM messages
+/// (Phase 1.5, build +21).  Listeners (currently a top-level navigator
+/// hook) react by pushing `RecapScreen.routeName`.  Emitted only when
+/// the feature flag is on AND the payload parses cleanly.
+///
+/// Counter-bumped on every receive so re-deliveries of the same
+/// `recap_id` value still drive a re-navigation if needed.
+final ValueNotifier<RecapPushEvent?> weeklyRecapEvents =
+    ValueNotifier<RecapPushEvent?>(null);
+
+@immutable
+class RecapPushEvent {
+  const RecapPushEvent({required this.recapId, required this.receivedAt});
+  /// Server-assigned identifier for the recap (typically the ISO week
+  /// string, e.g. `2026-W19`).  Opaque to the client.
+  final String recapId;
+  final DateTime receivedAt;
+}
+
 /// Top-level handler for background messages (must be top-level function).
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -252,29 +271,56 @@ class NotificationService {
 
   /// Parses the FCM `data` payload from the Edge Function (see
   /// `supabase/functions/notify-tile-event/index.ts`) which sends:
-  ///   data: { event: 'tile_lost', hexId: '<lowercase-h3>' }
+  ///   data: { event: 'tile_lost', hexId: `<lowercase-h3>` }
   /// and emits a [TileLostEvent] on [tileLostEvents] so the UI can
   /// invalidate the local cache instantly.  Pure plumbing — never throws.
   void _handleDataPayload(RemoteMessage message) {
-    if (!FeatureFlags.fcmTileLostInvalidationEnabled) return;
-    try {
-      final hexLower = parseTileLostPayload(message.data);
-      if (hexLower == null) return;
-      tileLostEvents.value = TileLostEvent(
-        hexLower: hexLower,
-        receivedAt: DateTime.now(),
-      );
-      dev.log(
-        'Emitted tile_lost event for $hexLower',
-        name: 'NotificationService',
-      );
-    } catch (e, st) {
-      dev.log(
-        '_handleDataPayload failed (silently): $e',
-        name: 'NotificationService',
-        error: e,
-        stackTrace: st,
-      );
+    if (FeatureFlags.fcmTileLostInvalidationEnabled) {
+      try {
+        final hexLower = parseTileLostPayload(message.data);
+        if (hexLower != null) {
+          tileLostEvents.value = TileLostEvent(
+            hexLower: hexLower,
+            receivedAt: DateTime.now(),
+          );
+          dev.log(
+            'Emitted tile_lost event for $hexLower',
+            name: 'NotificationService',
+          );
+        }
+      } catch (e, st) {
+        dev.log(
+          '_handleDataPayload(tile_lost) failed (silently): $e',
+          name: 'NotificationService',
+          error: e,
+          stackTrace: st,
+        );
+      }
+    }
+    // Phase 1.5: weekly_recap dispatch.  Independent of the tile_lost
+    // path — a malformed recap payload must not suppress a valid
+    // tile_lost event delivered in the same message (and vice versa).
+    if (FeatureFlags.weeklyRecapEnabled) {
+      try {
+        final recapId = parseRecapPayload(message.data);
+        if (recapId != null) {
+          weeklyRecapEvents.value = RecapPushEvent(
+            recapId: recapId,
+            receivedAt: DateTime.now(),
+          );
+          dev.log(
+            'Emitted weekly_recap event for $recapId',
+            name: 'NotificationService',
+          );
+        }
+      } catch (e, st) {
+        dev.log(
+          '_handleDataPayload(weekly_recap) failed (silently): $e',
+          name: 'NotificationService',
+          error: e,
+          stackTrace: st,
+        );
+      }
     }
   }
 
@@ -284,7 +330,7 @@ class NotificationService {
   /// malformed payload.  Never throws.  Exposed for unit tests.
   ///
   /// Edge function contract (see `supabase/functions/notify-tile-event`):
-  ///   { event: 'tile_lost', hexId: '<lowercase-h3>' }
+  ///   { event: 'tile_lost', hexId: `<lowercase-h3>` }
   /// Legacy keys `type` / `h3_hex` are also accepted for forward-compat.
   @visibleForTesting
   static String? parseTileLostPayload(Map<String, dynamic> data) {
@@ -296,6 +342,30 @@ class NotificationService {
       final hexLower = rawHex.toLowerCase();
       if (!RegExp(r'^[0-9a-f]+$').hasMatch(hexLower)) return null;
       return hexLower;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Pure parser for the Phase 1.5 weekly recap push.  Accepts:
+  ///   { event: 'weekly_recap', recapId: '2026-W19' }
+  /// Returns the recap-id when well-formed, null otherwise.  Never
+  /// throws.  Exposed for unit tests and intentionally tolerant of
+  /// future server-side schema additions: extra keys are ignored.
+  ///
+  /// Validation rules:
+  ///   * `event` must equal `weekly_recap` (no legacy alias today).
+  ///   * `recapId` must be a non-empty string of length <= 16 to
+  ///     defend against bloated payloads.  No further format check —
+  ///     the id is opaque to the client.
+  @visibleForTesting
+  static String? parseRecapPayload(Map<String, dynamic> data) {
+    try {
+      final event = data['event']?.toString();
+      if (event != 'weekly_recap') return null;
+      final raw = data['recapId']?.toString();
+      if (raw == null || raw.isEmpty || raw.length > 16) return null;
+      return raw;
     } catch (_) {
       return null;
     }
