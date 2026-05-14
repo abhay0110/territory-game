@@ -306,4 +306,144 @@ void main() {
           '2026-W53');
     });
   });
+
+  // Phase 1.3 — server backup merge.  Pure logic, no I/O.
+  group('StreakService.mergeServerSnapshot', () {
+    StreakServerSnapshot snapshot({
+      int currentStreak = 0,
+      int longestStreak = 0,
+      DateTime? lastCaptureDate,
+      int freezesAvailable = 0,
+      String? freezeWeekAnchor,
+    }) {
+      return StreakServerSnapshot(
+        currentStreak: currentStreak,
+        longestStreak: longestStreak,
+        lastCaptureDate: lastCaptureDate,
+        freezesAvailable: freezesAvailable,
+        freezeWeekAnchor: freezeWeekAnchor,
+      );
+    }
+
+    test('null server snapshot → null result (no merge)', () {
+      final r = StreakService.mergeServerSnapshot(
+        server: null,
+        localLastCaptureDate: null,
+        localCurrentStreak: 0,
+        localLongestEver: 0,
+        localFreezesAvailable: 0,
+        localFreezeWeekAnchor: null,
+      );
+      expect(r, isNull);
+    });
+
+    test('fresh install (no local last_capture_date) adopts server state',
+        () {
+      final r = StreakService.mergeServerSnapshot(
+        server: snapshot(
+          currentStreak: 7,
+          longestStreak: 12,
+          lastCaptureDate: DateTime(2026, 5, 12),
+          freezesAvailable: 1,
+          freezeWeekAnchor: '2026-W20',
+        ),
+        localLastCaptureDate: null,
+        localCurrentStreak: 0,
+        localLongestEver: 0,
+        localFreezesAvailable: 0,
+        localFreezeWeekAnchor: null,
+      );
+      expect(r, isNotNull);
+      expect(r!.currentStreak, 7);
+      expect(r.longestEver, 12);
+      expect(r.lastCaptureDate, DateTime(2026, 5, 12));
+      expect(r.freezesAvailable, 1);
+      expect(r.freezeWeekAnchor, '2026-W20');
+    });
+
+    test(
+        'active local + server has bigger longest_streak → only longest bumps, '
+        'rest stays local', () {
+      final r = StreakService.mergeServerSnapshot(
+        server: snapshot(currentStreak: 99, longestStreak: 50),
+        localLastCaptureDate: DateTime(2026, 5, 13),
+        localCurrentStreak: 3,
+        localLongestEver: 5,
+        localFreezesAvailable: 0,
+        localFreezeWeekAnchor: '2026-W20',
+      );
+      expect(r, isNotNull);
+      expect(r!.currentStreak, 3); // local wins
+      expect(r.longestEver, 50); // server max wins
+      expect(r.lastCaptureDate, DateTime(2026, 5, 13));
+      expect(r.freezesAvailable, 0);
+      expect(r.freezeWeekAnchor, '2026-W20');
+    });
+
+    test(
+        'active local + server has smaller longest_streak → null (no change)',
+        () {
+      final r = StreakService.mergeServerSnapshot(
+        server: snapshot(longestStreak: 2),
+        localLastCaptureDate: DateTime(2026, 5, 13),
+        localCurrentStreak: 5,
+        localLongestEver: 10,
+        localFreezesAvailable: 1,
+        localFreezeWeekAnchor: '2026-W20',
+      );
+      expect(r, isNull);
+    });
+
+    test('active local NEVER overwrites current_streak with bigger server value',
+        () {
+      final r = StreakService.mergeServerSnapshot(
+        server: snapshot(currentStreak: 100, longestStreak: 100),
+        localLastCaptureDate: DateTime(2026, 5, 13),
+        localCurrentStreak: 1,
+        localLongestEver: 1,
+        localFreezesAvailable: 0,
+        localFreezeWeekAnchor: '2026-W20',
+      );
+      expect(r, isNotNull);
+      expect(r!.currentStreak, 1, reason: 'local is authoritative when active');
+      expect(r.longestEver, 100);
+    });
+  });
+
+  group('StreakServerSnapshot.fromRow', () {
+    test('parses well-formed row', () {
+      final s = StreakServerSnapshot.fromRow({
+        'current_streak': 5,
+        'longest_streak': 10,
+        'last_capture_date': '2026-05-12',
+        'freezes_available': 1,
+        'freeze_week_anchor': '2026-W20',
+      });
+      expect(s.currentStreak, 5);
+      expect(s.longestStreak, 10);
+      expect(s.lastCaptureDate, DateTime(2026, 5, 12));
+      expect(s.freezesAvailable, 1);
+      expect(s.freezeWeekAnchor, '2026-W20');
+    });
+
+    test('tolerates nulls / missing fields → all defaults', () {
+      final s = StreakServerSnapshot.fromRow({});
+      expect(s.currentStreak, 0);
+      expect(s.longestStreak, 0);
+      expect(s.lastCaptureDate, isNull);
+      expect(s.freezesAvailable, 0);
+      expect(s.freezeWeekAnchor, isNull);
+    });
+
+    test('clamps negatives to 0', () {
+      final s = StreakServerSnapshot.fromRow({
+        'current_streak': -5,
+        'longest_streak': -1,
+        'freezes_available': -3,
+      });
+      expect(s.currentStreak, 0);
+      expect(s.longestStreak, 0);
+      expect(s.freezesAvailable, 0);
+    });
+  });
 }

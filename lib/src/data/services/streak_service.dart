@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Daily-capture streak with a weekly auto-credited freeze.
 ///
@@ -33,9 +36,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///    today to keep your N-day streak.").
 ///  - 2+ day gap, even with freeze, resets to 0 / 1.
 class StreakService {
-  StreakService({SharedPreferences? prefs, DateTime Function()? clock})
-      : _prefs = prefs,
-        _clock = clock ?? DateTime.now;
+  StreakService({
+    SharedPreferences? prefs,
+    DateTime Function()? clock,
+    SupabaseClient? supabaseClient,
+  })  : _prefs = prefs,
+        _clock = clock ?? DateTime.now,
+        _supabaseOverride = supabaseClient;
 
   static const _kLastCaptureDate = 'streak.last_capture_date'; // 'YYYY-MM-DD'
   static const _kStreakCount = 'streak.count';
@@ -43,9 +50,21 @@ class StreakService {
   static const _kFreezeWeekAnchor = 'streak.freeze_week_anchor'; // ISO 'YYYY-Www'
   static const _kLongestEver = 'streak.longest_ever';
   static const _kPendingBannerOnce = 'streak.pending_banner_once';
+  static const _kServerPullDone = 'streak.server_pull_done_v1';
 
   SharedPreferences? _prefs;
   final DateTime Function() _clock;
+  final SupabaseClient? _supabaseOverride;
+  bool _serverPullAttempted = false;
+
+  SupabaseClient? get _supabase {
+    if (_supabaseOverride != null) return _supabaseOverride;
+    try {
+      return Supabase.instance.client;
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<SharedPreferences> _ensure() async {
     return _prefs ??= await SharedPreferences.getInstance();
@@ -54,8 +73,21 @@ class StreakService {
   /// Read the current streak state, applying any time-based transitions
   /// (freeze refill, freeze consumption, lapse).  Idempotent — calling
   /// twice in the same day produces the same state.
+  ///
+  /// On the first call after app start, also opportunistically pulls
+  /// any server backup row (Phase 1.3) and merges before applying
+  /// transitions.  This is what restores the user's longest_streak
+  /// after a reinstall and aligns state across devices.
   Future<StreakState> readCurrentState() async {
     final prefs = await _ensure();
+    if (!_serverPullAttempted) {
+      _serverPullAttempted = true;
+      try {
+        await _pullFromServerAndMerge(prefs);
+      } catch (_) {
+        // Fail silent — local state remains source of truth.
+      }
+    }
     final today = _todayLocal();
     return _applyTransitions(prefs, today, captured: false);
   }
@@ -68,7 +100,10 @@ class StreakService {
   Future<StreakState> recordCaptureToday() async {
     final prefs = await _ensure();
     final today = _todayLocal();
-    return _applyTransitions(prefs, today, captured: true);
+    final state = await _applyTransitions(prefs, today, captured: true);
+    // Fire-and-forget server push.  Failure is fine — local is truth.
+    unawaited(_pushToServer(prefs, state));
+    return state;
   }
 
   /// Pop the one-shot "freeze was just consumed" flag.  UI calls this
@@ -92,6 +127,125 @@ class StreakService {
     await prefs.remove(_kFreezeWeekAnchor);
     await prefs.remove(_kLongestEver);
     await prefs.remove(_kPendingBannerOnce);
+    await prefs.remove(_kServerPullDone);
+    _serverPullAttempted = false;
+  }
+
+  // ── Server backup (Phase 1.3) ──────────────────────────────────────
+
+  /// Merge a server-side snapshot with local state.  Pure: no I/O, no
+  /// clock reads.  Rules (asymmetric on purpose, server is BACKUP only):
+  ///
+  ///  - longest_streak: server max wins (you can never lose history)
+  ///  - last_capture_date: server wins ONLY when local is null (fresh
+  ///    install).  Otherwise local is authoritative — current device
+  ///    knows its own captures.
+  ///  - current_streak: same as last_capture_date — server wins only
+  ///    when local has no last_capture_date.  This means a new device
+  ///    inherits the streak; an active device never gets overwritten.
+  ///  - freezes_available + freeze_week_anchor: same — server wins on\n  ///    fresh install, otherwise local wins.\n  ///\n  /// Returns null when no merge is needed (server snapshot empty / not\n  /// useful).  Otherwise returns the merged values to write to prefs.
+  static StreakMergeResult? mergeServerSnapshot({
+    required StreakServerSnapshot? server,
+    required DateTime? localLastCaptureDate,
+    required int localCurrentStreak,
+    required int localLongestEver,
+    required int localFreezesAvailable,
+    required String? localFreezeWeekAnchor,
+  }) {
+    if (server == null) return null;
+
+    final freshInstall = localLastCaptureDate == null;
+    final mergedLongest = server.longestStreak > localLongestEver
+        ? server.longestStreak
+        : localLongestEver;
+
+    if (!freshInstall) {
+      // Active local state — only longest_streak might bump.
+      if (mergedLongest == localLongestEver) return null;
+      return StreakMergeResult(
+        currentStreak: localCurrentStreak,
+        longestEver: mergedLongest,
+        lastCaptureDate: localLastCaptureDate,
+        freezesAvailable: localFreezesAvailable,
+        freezeWeekAnchor: localFreezeWeekAnchor,
+      );
+    }
+
+    // Fresh install — adopt server state wholesale.
+    return StreakMergeResult(
+      currentStreak: server.currentStreak,
+      longestEver: mergedLongest,
+      lastCaptureDate: server.lastCaptureDate,
+      freezesAvailable: server.freezesAvailable,
+      freezeWeekAnchor: server.freezeWeekAnchor,
+    );
+  }
+
+  Future<void> _pullFromServerAndMerge(SharedPreferences prefs) async {
+    final supa = _supabase;
+    final userId = supa?.auth.currentUser?.id;
+    if (supa == null || userId == null) return;
+
+    final row = await supa
+        .from('user_streaks')
+        .select(
+          'current_streak, longest_streak, last_capture_date, '
+          'freezes_available, freeze_week_anchor',
+        )
+        .eq('user_id', userId)
+        .maybeSingle();
+    if (row == null) return;
+
+    final server = StreakServerSnapshot.fromRow(row);
+    final lastDateStr = prefs.getString(_kLastCaptureDate);
+    final merged = mergeServerSnapshot(
+      server: server,
+      localLastCaptureDate:
+          lastDateStr == null ? null : DateTime.tryParse(lastDateStr),
+      localCurrentStreak: prefs.getInt(_kStreakCount) ?? 0,
+      localLongestEver: prefs.getInt(_kLongestEver) ?? 0,
+      localFreezesAvailable: prefs.getInt(_kFreezesAvailable) ?? 0,
+      localFreezeWeekAnchor: prefs.getString(_kFreezeWeekAnchor),
+    );
+    if (merged == null) return;
+
+    await prefs.setInt(_kStreakCount, merged.currentStreak);
+    await prefs.setInt(_kLongestEver, merged.longestEver);
+    await prefs.setInt(_kFreezesAvailable, merged.freezesAvailable);
+    if (merged.freezeWeekAnchor != null) {
+      await prefs.setString(_kFreezeWeekAnchor, merged.freezeWeekAnchor!);
+    }
+    if (merged.lastCaptureDate != null) {
+      await prefs.setString(
+        _kLastCaptureDate,
+        _isoDate(merged.lastCaptureDate!),
+      );
+    }
+    await prefs.setBool(_kServerPullDone, true);
+  }
+
+  Future<void> _pushToServer(
+    SharedPreferences prefs,
+    StreakState state,
+  ) async {
+    final supa = _supabase;
+    final userId = supa?.auth.currentUser?.id;
+    if (supa == null || userId == null) return;
+
+    try {
+      await supa.from('user_streaks').upsert({
+        'user_id': userId,
+        'current_streak': state.currentStreak,
+        'longest_streak': state.longestEver,
+        'last_capture_date': state.lastCaptureDate == null
+            ? null
+            : _isoDate(state.lastCaptureDate!),
+        'freezes_available': state.freezesAvailable,
+        'freeze_week_anchor': prefs.getString(_kFreezeWeekAnchor),
+      }, onConflict: 'user_id');
+    } catch (e) {
+      debugPrint('[Streak] server push failed: $e');
+    }
   }
 
   // ── Pure helpers (exposed static for unit testing) ──────────────────
@@ -305,4 +459,71 @@ class StreakTransition {
   final StreakState state;
   final String? freezeWeekAnchor;
   final bool didIncrement;
+}
+
+/// Snapshot of a server-side `user_streaks` row.  Used by
+/// [StreakService.mergeServerSnapshot] to combine server backup with
+/// local authoritative state.
+class StreakServerSnapshot {
+  const StreakServerSnapshot({
+    required this.currentStreak,
+    required this.longestStreak,
+    required this.lastCaptureDate,
+    required this.freezesAvailable,
+    required this.freezeWeekAnchor,
+  });
+
+  final int currentStreak;
+  final int longestStreak;
+  final DateTime? lastCaptureDate;
+  final int freezesAvailable;
+  final String? freezeWeekAnchor;
+
+  /// Tolerant parse for a Supabase row.  Missing / wrong-typed fields
+  /// default to neutral values (0 / null) so a half-populated row never
+  /// throws.
+  factory StreakServerSnapshot.fromRow(Map<String, dynamic> row) {
+    int parseInt(dynamic v) {
+      if (v is int) return v < 0 ? 0 : v;
+      if (v is num) return v.toInt() < 0 ? 0 : v.toInt();
+      if (v is String) {
+        final n = int.tryParse(v);
+        if (n != null) return n < 0 ? 0 : n;
+      }
+      return 0;
+    }
+
+    DateTime? parseDate(dynamic v) {
+      if (v is String && v.isNotEmpty) return DateTime.tryParse(v);
+      return null;
+    }
+
+    return StreakServerSnapshot(
+      currentStreak: parseInt(row['current_streak']),
+      longestStreak: parseInt(row['longest_streak']),
+      lastCaptureDate: parseDate(row['last_capture_date']),
+      freezesAvailable: parseInt(row['freezes_available']),
+      freezeWeekAnchor: row['freeze_week_anchor'] is String
+          ? row['freeze_week_anchor'] as String
+          : null,
+    );
+  }
+}
+
+/// Output of [StreakService.mergeServerSnapshot] — the post-merge
+/// values to write to local prefs.
+class StreakMergeResult {
+  const StreakMergeResult({
+    required this.currentStreak,
+    required this.longestEver,
+    required this.lastCaptureDate,
+    required this.freezesAvailable,
+    required this.freezeWeekAnchor,
+  });
+
+  final int currentStreak;
+  final int longestEver;
+  final DateTime? lastCaptureDate;
+  final int freezesAvailable;
+  final String? freezeWeekAnchor;
 }
