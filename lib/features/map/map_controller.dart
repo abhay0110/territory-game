@@ -104,7 +104,9 @@ class MapController {
 
     // ── Server refreshes (run BEFORE snapshotting capturedTiles) ────────
     // Both refresh calls invoke server-truth reconciliation against the
-    // local capturedHexes set (see CaptureService.reconcileCapturedHexes).
+    // local capturedHexes set (see CaptureService.reconcileCapturedHexes,
+    // currently provided as a pure static helper for future incremental
+    // wiring; loadFromSupabase is the authoritative full-prune today).
     // It is critical that BOTH refreshes run before we read
     // getCapturedTilesForCurrentUser() — otherwise prunes from the
     // corridor batch land in the local set AFTER the snapshot, delaying

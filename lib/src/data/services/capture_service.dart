@@ -96,6 +96,49 @@ class CaptureService {
 
   String? get currentUserId => supabaseClient.auth.currentUser?.id;
 
+  /// Conservative incremental reconciliation of the local capture cache
+  /// against authoritative server ownership.  Pure / static so it can
+  /// power both the nearby-ring and corridor-batch refresh paths from
+  /// one well-tested code path.
+  ///
+  /// Mutates [capturedHexes] and [capturedTilesByHex] IN PLACE, removing
+  /// only those hexes that the server explicitly reports as owned by
+  /// someone other than [currentUserId].  Returns the list of pruned
+  /// hexes (lowercase) so callers can emit telemetry / UI feedback.
+  ///
+  /// Conservative semantics — never prunes when:
+  ///   - the hex is not in [queriedHexes] (out-of-scope, could be stale);
+  ///   - the hex is in [queriedHexes] but missing from
+  ///     [serverOwnerByHex] (partial fetch / row deleted by admin);
+  ///   - the server reports the hex as owned by [currentUserId] (no-op).
+  ///
+  /// Gated in production by [FeatureFlags.cacheReconciliationEnabled].
+  /// Currently NOT WIRED into the live refresh path — [loadFromSupabase]
+  /// is the authoritative full-prune path on app start.  This function
+  /// exists as the future incremental path; wiring is deliberate work,
+  /// not a side-effect of importing this method.
+  static List<String> reconcileCapturedHexes({
+    required Set<String> capturedHexes,
+    required Map<String, GameTile> capturedTilesByHex,
+    required List<String> queriedHexes,
+    required Map<String, String?> serverOwnerByHex,
+    required String? currentUserId,
+  }) {
+    final lost = <String>[];
+    for (final raw in queriedHexes) {
+      final hex = raw.toLowerCase();
+      if (!capturedHexes.contains(hex)) continue;
+      if (!serverOwnerByHex.containsKey(hex)) continue;
+      final serverOwner = serverOwnerByHex[hex];
+      if (serverOwner == null) continue;
+      if (serverOwner == currentUserId) continue;
+      capturedHexes.remove(hex);
+      capturedTilesByHex.remove(hex);
+      lost.add(hex);
+    }
+    return lost;
+  }
+
   /// Invalidate any local optimistic-capture record for [hexId].  Used by
   /// the FCM `tile_lost` push consumer (see `tileLostEvents` in
   /// notification_service) so the moment the server tells us we lost a
