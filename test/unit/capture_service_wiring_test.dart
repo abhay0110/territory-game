@@ -6,15 +6,11 @@
 // build-13 wiring bug — a pure unit test cannot catch a missing call
 // site.
 //
-// SKIPPED (May 14 2026): the wiring these tests assert was specced in
-// build 14/16 work but never landed in capture_service.dart.  The pure
-// helper CaptureService.reconcileCapturedHexes exists and is fully
-// covered by capture_reconcile_test.dart, but no caller invokes it —
-// the FeatureFlags.cacheReconciliationEnabled flag is therefore a
-// placebo in production today.  Cross-device "lost tile stays green"
-// is still latent until next app restart triggers loadFromSupabase.
-// Tracked in /memories/repo/feature_roadmap_post_build16.md as a
-// pre-Phase-2 wiring task.  Un-skip these tests when wiring lands.
+// SHIPPED (Phase 1.X, May 14 2026): wiring landed in capture_service.dart.
+// _reconcileLocalCapturesAgainst is invoked from BOTH refreshNearbyOwners
+// and refreshCorridorOwners.  cacheReconciliationEnabled is no longer a
+// placebo.  These tests are the regression net against re-introducing
+// the build-13 wiring bug.
 //
 // Source-level reasoning is used because CaptureService is heavily
 // coupled to Supabase + shared_preferences; bringing in mocktail just
@@ -26,7 +22,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('REGRESSION: capture_service reconcile wiring', skip: 'Wiring not yet landed; see file header. Pure helper covered separately.', () {
+  group('REGRESSION: capture_service reconcile wiring', () {
     late String source;
 
     setUpAll(() {

@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/notification_service.dart';
 import '../../../core/constants/game_rules.dart';
+import '../../../core/feature_flags.dart';
 import '../../../models/game_tile.dart';
 import 'streak_service.dart';
 
@@ -281,12 +282,14 @@ class CaptureService {
 
     nearbyOwnerByHex.clear();
     _nearbyTilesByHex.clear();
+    final serverOwnerByHex = <String, String?>{};
     for (final r in rows) {
       if (r is Map && r['h3_hex'] is String && r['owner_user_id'] is String) {
         final hexLower = (r['h3_hex'] as String).toLowerCase();
         final ownerUserId = r['owner_user_id'] as String;
 
         nearbyOwnerByHex[hexLower] = ownerUserId;
+        serverOwnerByHex[hexLower] = ownerUserId;
 
         final capturedAt = _parseDateTime(r['captured_at']);
         final lastRefreshedAt = _parseDateTime(r['last_refreshed_at']);
@@ -301,6 +304,12 @@ class CaptureService {
         );
       }
     }
+
+    await _reconcileLocalCapturesAgainst(
+      source: 'nearby',
+      queriedHexes: hexes,
+      serverOwnerByHex: serverOwnerByHex,
+    );
   }
 
   DateTime? _parseDateTime(dynamic raw) {
@@ -513,6 +522,7 @@ class CaptureService {
     if (hexes.isEmpty) return;
 
     _corridorTilesByHex.clear();
+    final serverOwnerByHex = <String, String?>{};
 
     // Batch to stay within Supabase REST URL-length limits.
     const batchSize = 200;
@@ -529,6 +539,7 @@ class CaptureService {
         if (r is Map && r['h3_hex'] is String && r['owner_user_id'] is String) {
           final hexLower = (r['h3_hex'] as String).toLowerCase();
           final ownerUserId = r['owner_user_id'] as String;
+          serverOwnerByHex[hexLower] = ownerUserId;
           _corridorTilesByHex[hexLower] = _buildNearbyTile(
             hexLower,
             ownerUserId,
@@ -539,6 +550,40 @@ class CaptureService {
         }
       }
     }
+
+    await _reconcileLocalCapturesAgainst(
+      source: 'corridor',
+      queriedHexes: hexes,
+      serverOwnerByHex: serverOwnerByHex,
+    );
+  }
+
+  /// Private wrapper around the pure [reconcileCapturedHexes] helper.
+  /// Centralises the feature-flag check, persistence, and debug logging
+  /// so both [refreshNearbyOwners] and [refreshCorridorOwners] share
+  /// identical semantics.  No-op when
+  /// [FeatureFlags.cacheReconciliationEnabled] is false.
+  ///
+  /// [source] is just a debug tag ("nearby" or "corridor") used to
+  /// distinguish prune origins in field debugging.
+  Future<void> _reconcileLocalCapturesAgainst({
+    required String source,
+    required List<String> queriedHexes,
+    required Map<String, String?> serverOwnerByHex,
+  }) async {
+    if (!FeatureFlags.cacheReconciliationEnabled) return;
+    final pruned = reconcileCapturedHexes(
+      capturedHexes: capturedHexes,
+      capturedTilesByHex: _capturedTilesByHex,
+      queriedHexes: queriedHexes,
+      serverOwnerByHex: serverOwnerByHex,
+      currentUserId: currentUserId,
+    );
+    if (pruned.isEmpty) return;
+    debugPrint('[Capture] reconcile($source) pruned ${pruned.length} '
+        'hex(es): ${pruned.take(5).join(', ')}'
+        '${pruned.length > 5 ? '…' : ''}');
+    await saveToPrefs();
   }
 
   /// Returns corridor tiles not already covered by [capturedHexes] or
