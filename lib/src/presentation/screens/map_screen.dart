@@ -48,6 +48,8 @@ import '../widgets/guided_top_hud.dart';
 import '../widgets/hud_pill.dart';
 import '../widgets/selected_tile_info_card.dart';
 import '../widgets/map_legend.dart';
+import '../../data/services/identity_link_service.dart';
+import '../widgets/save_progress_sheet.dart';
 import '../widgets/section_progress_dialog.dart';
 import '../widgets/tile_details_dialog.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
@@ -91,6 +93,12 @@ class _AnimatedSessionSummary extends StatefulWidget {
   final int tilesCaptured;
   final List<_SummaryStat> stats;
   final VoidCallback onShare;
+  /// Optional inline "Save your progress" prompt rendered between the
+  /// stat rows and the SHARE/DONE button row.  Built by the caller only
+  /// when the user is currently anonymous AND the account-link UI flag
+  /// is on; null otherwise so the card collapses cleanly for linked
+  /// users.  Restores the prod build-14 behavior.
+  final Widget? inlineSavePrompt;
 
   const _AnimatedSessionSummary({
     required this.riding,
@@ -101,6 +109,7 @@ class _AnimatedSessionSummary extends StatefulWidget {
     required this.tilesCaptured,
     required this.stats,
     required this.onShare,
+    this.inlineSavePrompt,
   });
 
   @override
@@ -331,6 +340,26 @@ class _AnimatedSessionSummaryState extends State<_AnimatedSessionSummary>
                         }).toList();
                       }(),
                       const SizedBox(height: 18),
+                      // ── Inline "Save your progress" (anonymous only) ──
+                      // Rendered between the stat rows and the action
+                      // buttons.  Caller decides whether to supply it.
+                      if (widget.inlineSavePrompt != null) ...[
+                        _staggerWrap(
+                          buttonSlot,
+                          Column(
+                            children: [
+                              Container(
+                                height: 1,
+                                color:
+                                    GameUiTokens.panelBorder.withOpacity(0.50),
+                              ),
+                              const SizedBox(height: 14),
+                              widget.inlineSavePrompt!,
+                              const SizedBox(height: 6),
+                            ],
+                          ),
+                        ),
+                      ],
                       // ── Action buttons ──
                       _staggerWrap(
                         buttonSlot,
@@ -2464,6 +2493,46 @@ class _MapScreenState extends ConsumerState<MapScreen>
     );
   }
 
+  /// Public capability: opens the OAuth (Apple/Google) "Save your progress"
+  /// bottom-sheet from the HUD overflow menu.  Mirrors the inline prompt
+  /// that lives in the post-session summary card so users who close the
+  /// summary still have a stable entry point.  Restored from prod build 14.
+  ///
+  /// Sign-in flow:
+  /// - linkIdentity() merges the new OAuth identity onto the current
+  ///   anonymous uid, preserving captures/badges/streak/leaderboard.
+  /// - signInWithIdToken() on a fresh install (or after deliberate sign-out)
+  ///   resolves to the existing user that already owns that identity, so
+  ///   the device pulls all server-side progress back automatically.
+  /// - The local-progress-count guard refuses a swap that would strand
+  ///   captures held only in SharedPreferences on the orphaned anon uid.
+  Future<void> _showSaveProgressBottomSheet() async {
+    if (!FeatureFlags.accountLinkUiEnabled) return;
+    final linkService =
+        IdentityLinkService(client: _captureService.supabaseClient);
+    if (!linkService.isCurrentSessionAnonymous) {
+      if (!mounted) return;
+      final label = linkService.linkedProviderLabel ?? 'an account';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Already signed in with $label.'),
+        ),
+      );
+      return;
+    }
+    final localProgressCount = _captureService.capturedHexes.length;
+    if (!mounted) return;
+    await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => SaveProgressSheet(
+        service: linkService,
+        localProgressCount: localProgressCount,
+      ),
+    );
+  }
+
   /// Public capability: lets any player (anonymous or upgraded) claim a
   /// public display name shown on leaderboards.  Backed by the
   /// `profiles` table; RLS ensures users can only edit their own row.
@@ -3398,6 +3467,24 @@ class _MapScreenState extends ConsumerState<MapScreen>
       context: context,
       barrierColor: Colors.black54,
       builder: (context) {
+        // Build the inline "Save your progress" prompt only for anon users
+        // and only when the account-link UI is enabled.  Pass the local
+        // captured-hex count so the link service can refuse a
+        // data-stranding swap if the user picks an OAuth identity that's
+        // already attached to another HexTrail uid.
+        Widget? inlineSavePrompt;
+        if (FeatureFlags.accountLinkUiEnabled) {
+          final linkService =
+              IdentityLinkService(client: _captureService.supabaseClient);
+          if (linkService.isCurrentSessionAnonymous) {
+            inlineSavePrompt = SaveProgressSheet(
+              inline: true,
+              service: linkService,
+              localProgressCount: _captureService.capturedHexes.length,
+            );
+          }
+        }
+
         return _AnimatedSessionSummary(
           riding: riding,
           title: title,
@@ -3406,6 +3493,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
           timeText: timeText,
           tilesCaptured: _sessionTilesCaptured,
           stats: stats,
+          inlineSavePrompt: inlineSavePrompt,
           onShare: () {
             // Delta framing: prefix "+" on capture/takeover counts.
             const deltaLabels = {
@@ -3863,6 +3951,9 @@ class _MapScreenState extends ConsumerState<MapScreen>
           case 'set_display_name':
             unawaited(_showSetDisplayNameDialog());
             break;
+          case 'save_progress':
+            unawaited(_showSaveProgressBottomSheet());
+            break;
           case 'debug_upgrade_account':
             unawaited(_showHiddenAccountUpgradeDialog());
             break;
@@ -3888,10 +3979,17 @@ class _MapScreenState extends ConsumerState<MapScreen>
           value: 'set_display_name',
           child: Text('Set display name…'),
         ),
+        if (FeatureFlags.accountLinkUiEnabled &&
+            IdentityLinkService(client: _captureService.supabaseClient)
+                .isCurrentSessionAnonymous)
+          const PopupMenuItem<String>(
+            value: 'save_progress',
+            child: Text('Save your progress…'),
+          ),
         if (kDebugMode)
           const PopupMenuItem<String>(
             value: 'debug_upgrade_account',
-            child: Text('Save progress (debug)…'),
+            child: Text('Save progress (email debug)…'),
           ),
       ],
       child: Container(
@@ -4128,6 +4226,9 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         case 'debug_upgrade_account':
                           unawaited(_showHiddenAccountUpgradeDialog());
                           break;
+                        case 'save_progress':
+                          unawaited(_showSaveProgressBottomSheet());
+                          break;
                         case 'set_display_name':
                           unawaited(_showSetDisplayNameDialog());
                           break;
@@ -4177,6 +4278,14 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         value: 'set_display_name',
                         child: Text('Set display name…'),
                       ),
+                      if (FeatureFlags.accountLinkUiEnabled &&
+                          IdentityLinkService(
+                                  client: _captureService.supabaseClient)
+                              .isCurrentSessionAnonymous)
+                        const PopupMenuItem<String>(
+                          value: 'save_progress',
+                          child: Text('Save your progress…'),
+                        ),
                       if (kDebugMode) ...[
                         const PopupMenuDivider(),
                         CheckedPopupMenuItem(
@@ -4186,7 +4295,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         ),
                         const PopupMenuItem(
                           value: 'debug_upgrade_account',
-                          child: Text('Save progress (debug)…'),
+                          child: Text('Save progress (email debug)…'),
                         ),
                       ],
                     ],
