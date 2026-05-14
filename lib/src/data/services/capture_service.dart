@@ -203,6 +203,17 @@ class CaptureService {
     await prefs.setString(_prefsKeyCaptured, jsonEncode(list));
   }
 
+  /// Authoritative full-prune sync of the local capture cache against the
+  /// server's `user_tile_captures` for [userId].  The local
+  /// SharedPreferences-backed set is per-DEVICE (not per-user), so an
+  /// account swap (or first sign-in after reinstall) MUST treat the
+  /// server response as the source of truth: any local hex that the
+  /// server does NOT report owned by [userId] is pruned.
+  ///
+  /// Without this prune, captures from a previously signed-in account on
+  /// the same device would render as "mine" indefinitely on the new
+  /// account's map.  See /memories/repo/account_swap_data_loss.md
+  /// (May-10 incident) — this is the function that closes that gap.
   Future<void> loadFromSupabase(String userId) async {
     final rows = await supabaseClient
         .from('user_tile_captures')
@@ -211,7 +222,33 @@ class CaptureService {
         .eq('h3_res', h3Resolution) as List<dynamic>?;
     if (rows == null) return;
 
+    // Build the authoritative server set first so we can compute the
+    // prune diff before mutating anything.
+    final serverHexes = <String>{};
+    for (final r in rows) {
+      if (r is Map && r['h3_hex'] is String) {
+        serverHexes.add((r['h3_hex'] as String).toLowerCase());
+      }
+    }
+
     bool changed = false;
+
+    // Prune: drop any local hex the server does NOT claim for this user.
+    final stale = capturedHexes.difference(serverHexes);
+    if (stale.isNotEmpty) {
+      capturedHexes.removeAll(stale);
+      for (final hex in stale) {
+        _capturedTilesByHex.remove(hex);
+      }
+      changed = true;
+      debugPrint(
+        '[Capture] loadFromSupabase pruned ${stale.length} stale hex(es) '
+        '(prior account / device cache leak): '
+        '${stale.take(5).join(', ')}${stale.length > 5 ? '…' : ''}',
+      );
+    }
+
+    // Add + refresh metadata for every server-reported hex.
     for (final r in rows) {
       if (r is Map && r['h3_hex'] is String) {
         final hex = (r['h3_hex'] as String).toLowerCase();

@@ -471,6 +471,13 @@ class _MapScreenState extends ConsumerState<MapScreen>
   );
 
   StreamSubscription<geo.Position>? _posSub;
+  StreamSubscription<AuthState>? _authSub;
+  /// Tracks the last user uid we drove a `loadFromSupabase` for, so the
+  /// `auth.onAuthStateChange` listener can ignore no-op events (token
+  /// refresh, profile update) and only react to genuine uid swaps
+  /// (anon→permanent on link, or anon→existing on fresh-install
+  /// recovery).
+  String? _lastSyncedUid;
   bool _tracking = false;
   bool _followMe = true;
   String? _lastSessionCaptureAttemptHex;
@@ -697,6 +704,16 @@ class _MapScreenState extends ConsumerState<MapScreen>
     if (FeatureFlags.fcmTileLostInvalidationEnabled) {
       tileLostEvents.addListener(_handleTileLostListener);
     }
+
+    // Subscribe to Supabase auth-state changes so a successful OAuth link
+    // (or fresh-install recovery sign-in) immediately re-syncs the local
+    // capture cache + redraws the map for the new uid.  Without this the
+    // user would see stale (or no) hexes until a cold-restart.
+    // See /memories/repo/account_swap_data_loss.md.
+    _lastSyncedUid = Supabase.instance.client.auth.currentUser?.id;
+    _authSub = Supabase.instance.client.auth.onAuthStateChange.listen(
+      _handleAuthStateChange,
+    );
   }
 
   @override
@@ -705,6 +722,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
+    _authSub?.cancel();
     _nearbyRefreshTimer?.cancel();
     _capturePulseTimer?.cancel();
     _hudIntroTimer?.cancel();
@@ -2130,6 +2148,41 @@ class _MapScreenState extends ConsumerState<MapScreen>
     if (lat != null && lng != null) {
       unawaited(_refreshMapForCoordinates(lat, lng, moveCamera: false));
     }
+  }
+
+  /// React to Supabase auth-state changes — specifically uid swaps from
+  /// successful OAuth link or fresh-install recovery sign-in.  No-op for
+  /// token refresh / profile update events that don't change the uid.
+  ///
+  /// On a real swap we re-pull the authoritative captures for the new
+  /// uid (which prunes any stale device-cache hexes from the prior
+  /// account, see [CaptureService.loadFromSupabase]) and trigger a map
+  /// refresh so the user does NOT have to cold-restart to see their
+  /// recovered hexes.  See /memories/repo/account_swap_data_loss.md.
+  void _handleAuthStateChange(AuthState data) {
+    if (!mounted) return;
+    final newUid = data.session?.user.id;
+    if (newUid == null) return;
+    if (newUid == _lastSyncedUid) return;
+    _lastSyncedUid = newUid;
+    debugPrint(
+      '[Auth] uid changed → re-syncing captures for $newUid '
+      '(event=${data.event})',
+    );
+    unawaited(() async {
+      try {
+        await _captureService.loadFromSupabase(newUid);
+      } catch (e) {
+        debugPrint('[Auth] loadFromSupabase failed after uid change: $e');
+      }
+      if (!mounted) return;
+      setState(() {});
+      final lat = _lastLat;
+      final lng = _lastLng;
+      if (lat != null && lng != null) {
+        unawaited(_refreshMapForCoordinates(lat, lng, moveCamera: false));
+      }
+    }());
   }
 
   // ── App lifecycle: pause animation timers when backgrounded ──────────
@@ -3979,13 +4032,21 @@ class _MapScreenState extends ConsumerState<MapScreen>
           value: 'set_display_name',
           child: Text('Set display name…'),
         ),
-        if (FeatureFlags.accountLinkUiEnabled &&
-            IdentityLinkService(client: _captureService.supabaseClient)
-                .isCurrentSessionAnonymous)
-          const PopupMenuItem<String>(
-            value: 'save_progress',
-            child: Text('Save your progress…'),
-          ),
+        if (FeatureFlags.accountLinkUiEnabled)
+          if (IdentityLinkService(client: _captureService.supabaseClient)
+              .isCurrentSessionAnonymous)
+            const PopupMenuItem<String>(
+              value: 'save_progress',
+              child: Text('Save your progress…'),
+            )
+          else
+            PopupMenuItem<String>(
+              enabled: false,
+              child: Text(
+                'Signed in with '
+                '${IdentityLinkService(client: _captureService.supabaseClient).linkedProviderLabel ?? 'an account'}',
+              ),
+            ),
         if (kDebugMode)
           const PopupMenuItem<String>(
             value: 'debug_upgrade_account',
@@ -4278,14 +4339,22 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         value: 'set_display_name',
                         child: Text('Set display name…'),
                       ),
-                      if (FeatureFlags.accountLinkUiEnabled &&
-                          IdentityLinkService(
-                                  client: _captureService.supabaseClient)
-                              .isCurrentSessionAnonymous)
-                        const PopupMenuItem<String>(
-                          value: 'save_progress',
-                          child: Text('Save your progress…'),
-                        ),
+                      if (FeatureFlags.accountLinkUiEnabled)
+                        if (IdentityLinkService(
+                                client: _captureService.supabaseClient)
+                            .isCurrentSessionAnonymous)
+                          const PopupMenuItem<String>(
+                            value: 'save_progress',
+                            child: Text('Save your progress…'),
+                          )
+                        else
+                          PopupMenuItem<String>(
+                            enabled: false,
+                            child: Text(
+                              'Signed in with '
+                              '${IdentityLinkService(client: _captureService.supabaseClient).linkedProviderLabel ?? 'an account'}',
+                            ),
+                          ),
                       if (kDebugMode) ...[
                         const PopupMenuDivider(),
                         CheckedPopupMenuItem(
