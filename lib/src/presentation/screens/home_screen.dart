@@ -13,6 +13,7 @@ import '../../data/services/display_name_service.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
 import '../widgets/player_stats_sheet.dart';
+import '../widgets/territory_pressure_card.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
 import 'map_screen.dart';
 
@@ -30,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen>
   int _capturedTileCount = 0;
   Set<String> _capturedHexes = const {};
   String? _displayName;
+  TrailLeaderboardSnapshot? _leaderboardSnapshot;
 
   @override
   void initState() {
@@ -41,6 +43,18 @@ class _HomeScreenState extends State<HomeScreen>
     )..repeat();
     _loadCapturedCount();
     _loadDisplayName();
+    _loadLeaderboardSnapshot();
+  }
+
+  Future<void> _loadLeaderboardSnapshot() async {
+    try {
+      final snapshot = await TrailLeaderboardService(
+        supabaseClient: Supabase.instance.client,
+      ).fetchBurkeGilman();
+      if (mounted) setState(() => _leaderboardSnapshot = snapshot);
+    } catch (_) {
+      // Fail silent — pressure card collapses to SizedBox.shrink.
+    }
   }
 
   Future<void> _loadDisplayName() async {
@@ -76,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadCapturedCount();
+      _loadLeaderboardSnapshot();
     }
   }
 
@@ -173,6 +188,13 @@ class _HomeScreenState extends State<HomeScreen>
                           _StatsTeaser(
                             onTap: () => showPlayerStatsSheet(context),
                           ),
+                          if (_leaderboardSnapshot != null) ...[
+                            const SizedBox(height: 12),
+                            TerritoryPressureCard(
+                              leaderboard: _leaderboardSnapshot,
+                              onTap: _enterBattleWithLeaderboard,
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           _ObjectiveCard(
                             capturedCount: _capturedTileCount,

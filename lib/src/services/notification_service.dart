@@ -2,10 +2,31 @@ import 'dart:developer' as dev;
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+
+import '../../core/feature_flags.dart';
+
+/// Broadcast notifier for inbound `tile_lost` FCM messages so any UI
+/// surface (currently the map screen) can react instantly without
+/// coupling NotificationService to game state.
+///
+/// Value is the lowercase H3 hex ID of the tile we just lost.  Listeners
+/// should treat the same value arriving twice as two distinct events
+/// (use a counter or guard, see map_screen wire-up).  Top-level so
+/// background isolates can also write to it (where supported).
+final ValueNotifier<TileLostEvent?> tileLostEvents =
+    ValueNotifier<TileLostEvent?>(null);
+
+@immutable
+class TileLostEvent {
+  const TileLostEvent({required this.hexLower, required this.receivedAt});
+  final String hexLower;
+  final DateTime receivedAt;
+}
 
 /// Top-level handler for background messages (must be top-level function).
 @pragma('vm:entry-point')
@@ -108,6 +129,7 @@ class NotificationService {
         'Foreground message: ${message.messageId}',
         name: 'NotificationService',
       );
+      _handleDataPayload(message);
       _showLocalNotification(message);
     });
 
@@ -117,6 +139,12 @@ class NotificationService {
         'Notification tap (background): ${message.messageId}',
         name: 'NotificationService',
       );
+      // Re-emit so the cache invalidates the moment the user resumes the
+      // app via the notification, even if they never went foreground while
+      // the push arrived.  The next periodic refresh would also reconcile
+      // (FeatureFlags.cacheReconciliationEnabled), but this gives instant
+      // visual feedback on resume.
+      _handleDataPayload(message);
     });
 
     // Token refresh — persist to Supabase so push delivery stays valid.
@@ -220,6 +248,57 @@ class NotificationService {
   Future<void> _fetchToken() async {
     _fcmToken = await _messaging.getToken();
     dev.log('FCM token: ${_fcmToken ?? 'null'}', name: 'NotificationService');
+  }
+
+  /// Parses the FCM `data` payload from the Edge Function (see
+  /// `supabase/functions/notify-tile-event/index.ts`) which sends:
+  ///   data: { event: 'tile_lost', hexId: '<lowercase-h3>' }
+  /// and emits a [TileLostEvent] on [tileLostEvents] so the UI can
+  /// invalidate the local cache instantly.  Pure plumbing — never throws.
+  void _handleDataPayload(RemoteMessage message) {
+    if (!FeatureFlags.fcmTileLostInvalidationEnabled) return;
+    try {
+      final hexLower = parseTileLostPayload(message.data);
+      if (hexLower == null) return;
+      tileLostEvents.value = TileLostEvent(
+        hexLower: hexLower,
+        receivedAt: DateTime.now(),
+      );
+      dev.log(
+        'Emitted tile_lost event for $hexLower',
+        name: 'NotificationService',
+      );
+    } catch (e, st) {
+      dev.log(
+        '_handleDataPayload failed (silently): $e',
+        name: 'NotificationService',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  /// Pure payload parser — accepts the FCM `data` map and returns the
+  /// lowercase H3 hex ID iff this is a well-formed `tile_lost` event.
+  /// Returns null for any other event type, missing/invalid hex, or
+  /// malformed payload.  Never throws.  Exposed for unit tests.
+  ///
+  /// Edge function contract (see `supabase/functions/notify-tile-event`):
+  ///   { event: 'tile_lost', hexId: '<lowercase-h3>' }
+  /// Legacy keys `type` / `h3_hex` are also accepted for forward-compat.
+  @visibleForTesting
+  static String? parseTileLostPayload(Map<String, dynamic> data) {
+    try {
+      final event = (data['event'] ?? data['type'])?.toString();
+      if (event != 'tile_lost') return null;
+      final rawHex = (data['hexId'] ?? data['h3_hex'])?.toString();
+      if (rawHex == null || rawHex.isEmpty) return null;
+      final hexLower = rawHex.toLowerCase();
+      if (!RegExp(r'^[0-9a-f]+$').hasMatch(hexLower)) return null;
+      return hexLower;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _showLocalNotification(RemoteMessage message) async {

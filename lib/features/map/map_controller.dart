@@ -102,11 +102,23 @@ class MapController {
       longitude,
     );
 
+    // ── Server refreshes (run BEFORE snapshotting capturedTiles) ────────
+    // Both refresh calls invoke server-truth reconciliation against the
+    // local capturedHexes set (see CaptureService.reconcileCapturedHexes).
+    // It is critical that BOTH refreshes run before we read
+    // getCapturedTilesForCurrentUser() — otherwise prunes from the
+    // corridor batch land in the local set AFTER the snapshot, delaying
+    // the visual flip by one full refresh cycle (~15s → up to 30s
+    // perceived latency).  Tested via map_controller_ordering_test.dart.
     await captureService.refreshNearbyOwnersForHex(
       currentHex,
       ringSize: nearbyRingSize,
     );
+    if (corridorHexes != null && corridorHexes.isNotEmpty) {
+      await captureService.refreshCorridorOwners(corridorHexes);
+    }
 
+    // ── Read snapshots (now reflects any reconcile-driven prunes) ───────
     final capturedTiles = await captureService.getCapturedTilesForCurrentUser();
     final nearbyTiles = await captureService.getNearbyTiles();
     final currentCell = BigInt.parse(currentHex, radix: 16);
@@ -121,8 +133,8 @@ class MapController {
     };
 
     // Merge corridor ownership for trail hexes beyond the nearby ring.
+    // (Refresh already happened above; here we only read the snapshot.)
     if (corridorHexes != null && corridorHexes.isNotEmpty) {
-      await captureService.refreshCorridorOwners(corridorHexes);
       final corridorTiles = await captureService.getCorridorTiles();
       for (final tile in corridorTiles) {
         tileByHex.putIfAbsent(tile.h3Index.toLowerCase(), () => tile);

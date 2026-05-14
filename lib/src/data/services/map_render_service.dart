@@ -17,6 +17,7 @@ class MapRenderService {
   mb.MapboxMap? _map;
   mb.PolygonAnnotationManager? _corridorMgr;
   mb.PolylineAnnotationManager? _trailLineMgr;
+  mb.PolygonAnnotationManager? _currentShadowMgr;
   mb.PolygonAnnotationManager? _currentHaloMgr;
   mb.PolygonAnnotationManager? _currentMgr;
   mb.PolygonAnnotationManager? _capturedMgr;
@@ -25,6 +26,8 @@ class MapRenderService {
   mb.PolygonAnnotationManager? _recommendationMgr;
   mb.PolygonAnnotation? _currentPoly;
   mb.PolygonAnnotation? _currentHaloPoly;
+  mb.PolygonAnnotation? _currentShadowPoly;
+  String? _currentShadowHex;
   mb.PolygonAnnotation? _selectionPoly;
   mb.PolygonAnnotation? _recommendationHaloPoly;
   mb.PolygonAnnotation? _recommendationPoly;
@@ -55,6 +58,16 @@ class MapRenderService {
   static const int _outlineColor = GameColors.outlineDarkArgb;
   static const int _enemyCapturableOutlineColor =
       GameColors.rivalOutlineDarkArgb;
+
+  // ── Active-hex halo styling ────────────────────────────────────────────
+  //
+  // Bright warm-yellow accent so the glow reads through the green
+  // captured-mine fill (which previously washed out the same-hue green
+  // halo).  Scale is applied around the hex centroid so the ring extends
+  // ~12% beyond the current-fill boundary, leaving a visible glow border
+  // on top of the standing tile.
+  static const int _haloAccentColor = 0xFFFFE066; // warm amber-yellow
+  static const double _haloScale = 1.12;
   static const int _currentOutlineColor = GameColors.currentBorderArgb;
 
   // ── Launch-entry muting ────────────────────────────────────────────────
@@ -133,6 +146,11 @@ class MapRenderService {
     _corridorMgr ??= await _map!.annotations.createPolygonAnnotationManager();
     // Trail polyline sits on top of the corridor lane but under tiles.
     _trailLineMgr ??= await _map!.annotations.createPolylineAnnotationManager();
+    // Drop-shadow under the active hex — created BEFORE the halo so it
+    // renders BENEATH it (z-order: shadow → halo → current fill).  Gives
+    // the player's standing tile a subtle 3D "raised" appearance.
+    _currentShadowMgr ??= await _map!.annotations
+        .createPolygonAnnotationManager();
     // Active-hex halo sits BENEATH the current hex so the main fill stays
     // crisp on top of the pulsing glow wash.
     _currentHaloMgr ??= await _map!.annotations
@@ -165,6 +183,35 @@ class MapRenderService {
     );
   }
 
+  /// Polygon options for a hex boundary scaled outward from its centroid by
+  /// [scale] (e.g. 1.12 = 12% larger).  Used to draw glow/halo annotations
+  /// that need to remain visible OUTSIDE the same-hex current fill drawn on
+  /// top of them.
+  mb.PolygonAnnotationOptions _scaledPolygonOptionsForCell(
+    String h3IndexLower, {
+    required int fillColor,
+    required int outlineColor,
+    required double opacity,
+    required double scale,
+  }) {
+    final cell = BigInt.parse(h3IndexLower, radix: 16);
+    final boundary = h3Instance.cellToBoundary(cell);
+    final centroid = cellCentroid(cell, h3IndexLower);
+    final ring = boundary.map((c) {
+      final lat = centroid.lat + (c.lat - centroid.lat) * scale;
+      final lng = centroid.lng + (c.lon - centroid.lng) * scale;
+      return mb.Position(lng, lat);
+    }).toList();
+    if (ring.isNotEmpty) ring.add(ring.first);
+
+    return mb.PolygonAnnotationOptions(
+      geometry: mb.Polygon(coordinates: [ring]),
+      fillOpacity: opacity,
+      fillColor: fillColor,
+      fillOutlineColor: outlineColor,
+    );
+  }
+
   Future<void> drawCurrentCell(
     h3lib.H3Index cell, {
     required GameTile tile,
@@ -187,6 +234,21 @@ class MapRenderService {
     );
 
     _currentPoly = await _currentMgr!.create(options);
+
+    // Drop shadow is part of the trail "raised tile" affordance — only
+    // render when the player is actually standing on a corridor hex.  Off
+    // corridor (driving around town, walking home, etc.) we clear it so
+    // the user does not see an unexplained dark crescent following them.
+    final hexLower = tile.h3Index.toLowerCase();
+    final onCorridor = LaunchCorridor.displayHexes.contains(hexLower);
+    if (!onCorridor) {
+      if (_currentShadowPoly != null || _currentShadowHex != null) {
+        await clearCurrentShadow();
+      }
+    } else if (hexLower != _currentShadowHex) {
+      await _drawCurrentShadow(cell);
+      _currentShadowHex = hexLower;
+    }
   }
 
   Future<void> setCapturedVisible(GameTile tile, bool visible) async {
@@ -663,16 +725,18 @@ class MapRenderService {
     }
 
     try {
-      final cell = BigInt.parse(h3IndexLower, radix: 16);
-      // Soft green glow that breathes between barely-visible and warm.
-      // Same hue family as the player-owned tile fill so it reads as
-      // "your standing tile" rather than as an alert/recommendation.
-      final opacity = pulseOn ? 0.55 : 0.20;
-      final options = _polygonOptionsForCell(
-        cell,
-        fillColor: _colorMineProtected,
-        outlineColor: _colorMineProtected, // blend outline into fill
+      // Halo is drawn as a slightly larger ring AROUND the current hex so
+      // the glow remains visible even when the captured-mine fill (same
+      // green) is layered on top of it.  Without the outward scale, the
+      // halo and the current fill share the same boundary and the halo
+      // disappears under the fill on captured tiles.
+      final opacity = pulseOn ? 0.85 : 0.35;
+      final options = _scaledPolygonOptionsForCell(
+        h3IndexLower,
+        fillColor: _haloAccentColor,
+        outlineColor: _haloAccentColor, // blend outline into fill
         opacity: opacity,
+        scale: _haloScale,
       );
       _currentHaloPoly = await _currentHaloMgr!.create(options);
     } catch (_) {
@@ -688,12 +752,118 @@ class MapRenderService {
     _currentHaloPoly = null;
   }
 
+  // ── Active-hex drop shadow ("3D" raised effect) ─────────────────
+  //
+  // A static dark polygon offset slightly south-east of the current hex,
+  // drawn beneath the halo and the main fill.  Combined with the existing
+  // pulse + breathe halo, this produces a subtle "raised tile" / 3D effect
+  // without any per-frame cost (one delete + one create per current-hex
+  // change — typically once every several seconds while walking).
+  //
+  // The shadow is intentionally a translated copy of the hex boundary
+  // (Mapbox PolygonAnnotation has no transform), offset in lat/lng by an
+  // amount that scales naturally with map zoom alongside the hex itself.
+
+  // ~13 m south-east at Seattle latitudes — tuned visually against the
+  // mockup in tool/active_hex_mockup.html (option E).
+  static const double _shadowLatOffset = -0.00012; // south
+  static const double _shadowLngOffset = 0.000175; // east
+
+  Future<void> _drawCurrentShadow(h3lib.H3Index cell) async {
+    await _ensureManagers();
+    if (_currentShadowMgr == null) return;
+
+    if (_currentShadowPoly != null) {
+      try {
+        await _currentShadowMgr!.delete(_currentShadowPoly!);
+      } catch (_) {}
+      _currentShadowPoly = null;
+    }
+
+    try {
+      final boundary = h3Instance.cellToBoundary(cell);
+      final ring = boundary
+          .map(
+            (c) =>
+                mb.Position(c.lon + _shadowLngOffset, c.lat + _shadowLatOffset),
+          )
+          .toList();
+      if (ring.isEmpty) return;
+      ring.add(ring.first);
+
+      final options = mb.PolygonAnnotationOptions(
+        geometry: mb.Polygon(coordinates: [ring]),
+        // Solid black with ~55% alpha; ARGB packed.
+        fillColor: 0xFF000000,
+        fillOutlineColor: 0xFF000000,
+        fillOpacity: 0.55,
+      );
+      _currentShadowPoly = await _currentShadowMgr!.create(options);
+    } catch (_) {
+      // Decorative — failures must never affect the main render path.
+    }
+  }
+
+  Future<void> clearCurrentShadow() async {
+    if (_currentShadowPoly != null && _currentShadowMgr != null) {
+      try {
+        await _currentShadowMgr!.delete(_currentShadowPoly!);
+      } catch (_) {}
+    }
+    _currentShadowPoly = null;
+    _currentShadowHex = null;
+  }
+
+  /// Draws the active-hex halo with brightness driven by capture dwell
+  /// [progress] (0.0 → 1.0).  Shares the underlying [_currentHaloMgr] /
+  /// [_currentHaloPoly] with [drawActiveHexHalo], so callers MUST ensure
+  /// only one of the two drives the halo at any given time (the map screen
+  /// pauses the pulse timer while progress mode is active).
+  ///
+  /// Behavior is purely additive — when [FeatureFlags.captureProgressHintEnabled]
+  /// is false this method is never invoked.
+  Future<void> drawActiveHexHaloProgress(
+    String h3IndexLower,
+    double progress,
+  ) async {
+    await _ensureManagers();
+    if (_currentHaloMgr == null) return;
+
+    if (_currentHaloPoly != null) {
+      try {
+        await _currentHaloMgr!.delete(_currentHaloPoly!);
+      } catch (_) {}
+      _currentHaloPoly = null;
+    }
+
+    try {
+      final clamped = progress.clamp(0.0, 1.0);
+      // Interpolate between the dim floor and a bright ceiling so the
+      // charging "countdown" effect is unmistakable even on a captured
+      // (already-mine-green) hex.  Drawn as an outward-scaled ring for
+      // the same reason as [drawActiveHexHalo].
+      final opacity = 0.35 + (0.95 - 0.35) * clamped;
+      final options = _scaledPolygonOptionsForCell(
+        h3IndexLower,
+        fillColor: _haloAccentColor,
+        outlineColor: _haloAccentColor,
+        opacity: opacity,
+        scale: _haloScale,
+      );
+      _currentHaloPoly = await _currentHaloMgr!.create(options);
+    } catch (_) {
+      // Decorative — failures must not affect main render path.
+    }
+  }
+
   void dispose() {
     _recommendationHaloPoly = null;
     _recommendationPoly = null;
     _selectionPoly = null;
     _currentPoly = null;
     _currentHaloPoly = null;
+    _currentShadowPoly = null;
+    _currentShadowHex = null;
     _capturedPolyByHex.clear();
     _visibleCapturedHex.clear();
   }

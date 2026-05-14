@@ -16,6 +16,7 @@ import '../../../core/constants/game_rules.dart';
 import '../../../core/constants/launch_corridor.dart';
 import '../../../core/constants/seattle_trails.dart';
 import '../../../core/constants/valid_trail_hexes.dart';
+import '../../../core/feature_flags.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/game_tile.dart';
 import '../../../models/trail_progress.dart';
@@ -540,6 +541,18 @@ class _MapScreenState extends ConsumerState<MapScreen>
   Timer? _activeHexPulseTimer;
   String? _activeHexHaloHex;
   bool _activeHexPulseOn = false;
+
+  // Capture-progress hint (FeatureFlags.captureProgressHintEnabled).
+  // When the player is dwelling on a capturable hex, drives the halo
+  // brightness from 0 → 1 over the dwell window so they SEE the
+  // "charging up" countdown before auto-capture fires.  Shares the
+  // same _currentHaloPoly as the pulse — only one path drives it.
+  Timer? _captureProgressTimer;
+  String? _captureProgressHex;
+
+  // tile_lost FCM consumer — dedupes by event timestamp so the same
+  // value re-emitted by ValueNotifier listeners (rare) is processed once.
+  DateTime? _lastTileLostProcessedAt;
   // Migrated to provider — getters for backward-compat.
   bool get _showPostCaptureGuidance =>
       ref.read(gameStateProvider).showPostCaptureGuidance;
@@ -647,6 +660,14 @@ class _MapScreenState extends ConsumerState<MapScreen>
       if (!mounted) return;
       _updateCurrentObjective();
     });
+
+    // Subscribe to inbound FCM tile_lost pushes so the local capture
+    // cache invalidates the moment the server tells us we lost a tile.
+    // Periodic ownership refresh would also reconcile (cacheReconciliation
+    // safety-net), but this gives instant visual feedback.
+    if (FeatureFlags.fcmTileLostInvalidationEnabled) {
+      tileLostEvents.addListener(_handleTileLostListener);
+    }
   }
 
   @override
@@ -665,10 +686,14 @@ class _MapScreenState extends ConsumerState<MapScreen>
     _selectedTileTicker?.cancel();
     _recommendedTilePulseTimer?.cancel();
     _activeHexPulseTimer?.cancel();
+    _captureProgressTimer?.cancel();
     _captureFeedbackTimer?.cancel();
     _postCaptureHintTimer?.cancel();
     _leaderboardRefreshTimer?.cancel();
     _mapRenderService.dispose();
+    if (FeatureFlags.fcmTileLostInvalidationEnabled) {
+      tileLostEvents.removeListener(_handleTileLostListener);
+    }
     super.dispose();
   }
 
@@ -1892,6 +1917,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
   //     player visually for being off the playfield.
   //   • App must be foreground — see [didChangeAppLifecycleState].
   Future<void> _clearActiveHexHalo() async {
+    _clearCaptureProgressHint();
     _activeHexPulseTimer?.cancel();
     _activeHexPulseTimer = null;
     _activeHexHaloHex = null;
@@ -1908,9 +1934,19 @@ class _MapScreenState extends ConsumerState<MapScreen>
         LaunchCorridor.displayHexes.contains(_currentTile.toLowerCase());
 
     if (!shouldGlow) {
+      if (_captureProgressTimer != null) {
+        _clearCaptureProgressHint();
+      }
       if (_activeHexPulseTimer != null || _activeHexHaloHex != null) {
         unawaited(_clearActiveHexHalo());
       }
+      return;
+    }
+
+    // Capture-progress hint takes precedence over the breathing pulse.
+    // When active, it drives _currentHaloPoly directly; we must not
+    // start the pulse timer or the two will race on the polygon.
+    if (_evaluateCaptureProgressHint()) {
       return;
     }
 
@@ -1947,6 +1983,126 @@ class _MapScreenState extends ConsumerState<MapScreen>
     );
   }
 
+  // ── Capture-progress hint (FeatureFlags.captureProgressHintEnabled) ──
+  //
+  // Drives the halo brightness from 0 → 1 over the auto-capture dwell
+  // window so the player gets visual feedback that "the hex is charging
+  // up" before capture fires.  Returns true when progress mode is
+  // active, so [_syncActiveHexHalo] can skip starting the pulse timer
+  // (the two paths share _currentHaloPoly and would race otherwise).
+  bool _evaluateCaptureProgressHint() {
+    if (!FeatureFlags.captureProgressHintEnabled) return false;
+    if (!_sessionActive) return false;
+
+    final hex = _pendingAutoCaptureHex;
+    final enteredAt = _enteredPendingTileAt;
+    if (hex == null || enteredAt == null) return false;
+
+    final hexLower = hex.toLowerCase();
+    if (_currentTile.toLowerCase() != hexLower) return false;
+    if (!LaunchCorridor.displayHexes.contains(hexLower)) return false;
+
+    final dwellMs = _modeConfig.autoCaptureDwellTime.inMilliseconds;
+    if (dwellMs <= 0) return false;
+
+    // Same hex still pending — keep the existing timer running.
+    if (_captureProgressHex == hexLower && _captureProgressTimer != null) {
+      return true;
+    }
+
+    // Cancel the pulse timer so the two paths never race on the polygon.
+    _activeHexPulseTimer?.cancel();
+    _activeHexPulseTimer = null;
+    _activeHexPulseOn = false;
+    _activeHexHaloHex = hexLower;
+    _captureProgressHex = hexLower;
+
+    // Immediate frame so the player sees the dim halo right away.
+    final progress0 =
+        (DateTime.now().difference(enteredAt).inMilliseconds / dwellMs)
+            .clamp(0.0, 1.0);
+    unawaited(
+      _mapRenderService.drawActiveHexHaloProgress(hexLower, progress0),
+    );
+
+    _captureProgressTimer?.cancel();
+    _captureProgressTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) {
+        if (!mounted) {
+          _clearCaptureProgressHint();
+          return;
+        }
+        final hexNow = _captureProgressHex;
+        final entered = _enteredPendingTileAt;
+        if (hexNow == null || entered == null) {
+          _clearCaptureProgressHint();
+          return;
+        }
+        // Bail if state has drifted (left hex, session ended, dwell reset)
+        // and let _syncActiveHexHalo resume the pulse path on the next
+        // tick.
+        if (!_sessionActive ||
+            _pendingAutoCaptureHex?.toLowerCase() != hexNow ||
+            _currentTile.toLowerCase() != hexNow) {
+          _clearCaptureProgressHint();
+          return;
+        }
+        final progress =
+            (DateTime.now().difference(entered).inMilliseconds / dwellMs)
+                .clamp(0.0, 1.0);
+        unawaited(
+          _mapRenderService.drawActiveHexHaloProgress(hexNow, progress),
+        );
+        // Once we've reached full brightness, stop driving — capture is
+        // either firing or being held off by cooldown / debounce.  The
+        // pulse path resumes on the next _syncActiveHexHalo call.
+        if (progress >= 1.0) {
+          _clearCaptureProgressHint();
+        }
+      },
+    );
+    return true;
+  }
+
+  void _clearCaptureProgressHint() {
+    _captureProgressTimer?.cancel();
+    _captureProgressTimer = null;
+    _captureProgressHex = null;
+  }
+
+  // ── tile_lost FCM consumer ───────────────────────────────────────────
+  //
+  // Wired in initState behind FeatureFlags.fcmTileLostInvalidationEnabled.
+  // Reacts to inbound FCM `tile_lost` data payloads (emitted by
+  // notification_service.tileLostEvents) by pruning the affected hex
+  // from the local optimistic capture cache, then triggering an
+  // out-of-band map refresh so the polygon flips colour without waiting
+  // for the next periodic ownership tick.  All work is best-effort —
+  // the cacheReconciliation safety net catches the same change on the
+  // next periodic refresh if anything fails here.
+  void _handleTileLostListener() {
+    final event = tileLostEvents.value;
+    if (event == null) return;
+    if (_lastTileLostProcessedAt == event.receivedAt) return;
+    _lastTileLostProcessedAt = event.receivedAt;
+    _handleTileLostEvent(event);
+  }
+
+  void _handleTileLostEvent(TileLostEvent event) {
+    if (!mounted) return;
+    final changed = _captureService.invalidateLocalCaptureForHex(
+      event.hexLower,
+    );
+    if (!changed) return;
+    setState(() {});
+    final lat = _lastLat;
+    final lng = _lastLng;
+    if (lat != null && lng != null) {
+      unawaited(_refreshMapForCoordinates(lat, lng, moveCamera: false));
+    }
+  }
+
   // ── App lifecycle: pause animation timers when backgrounded ──────────
   //
   // Both the recommended-tile glow and the active-hex halo run periodic
@@ -1963,6 +2119,8 @@ class _MapScreenState extends ConsumerState<MapScreen>
       case AppLifecycleState.detached:
         _activeHexPulseTimer?.cancel();
         _activeHexPulseTimer = null;
+        _captureProgressTimer?.cancel();
+        _captureProgressTimer = null;
         _recommendedTilePulseTimer?.cancel();
         _recommendedTilePulseTimer = null;
         break;

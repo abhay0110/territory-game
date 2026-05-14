@@ -96,6 +96,25 @@ class CaptureService {
 
   String? get currentUserId => supabaseClient.auth.currentUser?.id;
 
+  /// Invalidate any local optimistic-capture record for [hexId].  Used by
+  /// the FCM `tile_lost` push consumer (see `tileLostEvents` in
+  /// notification_service) so the moment the server tells us we lost a
+  /// tile, the local map flips colour without waiting for the next
+  /// periodic ownership refresh.  Returns true if anything was actually
+  /// removed, so callers can avoid unnecessary rebuilds when the cache
+  /// was already in sync.
+  ///
+  /// Note: does NOT touch SharedPreferences-backed [capturedHexes] —
+  /// that set is a per-device cache pruned by [loadFromSupabase] and
+  /// [reconcileCapturedHexes].  The next periodic refresh will reconcile
+  /// it; the in-memory tile maps are the rendering source of truth.
+  bool invalidateLocalCaptureForHex(String hexId) {
+    final lower = hexId.toLowerCase();
+    final hadCaptured = _capturedTilesByHex.remove(lower) != null;
+    final hadNearby = _nearbyTilesByHex.remove(lower) != null;
+    return hadCaptured || hadNearby;
+  }
+
   Future<void> ensureSignedIn() async {
     if (supabaseClient.auth.currentUser != null) return;
     await supabaseClient.auth.signInAnonymously();

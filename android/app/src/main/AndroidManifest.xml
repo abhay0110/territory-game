@@ -1,11 +1,20 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-   <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+   <!-- The flutter_local_notifications plugin's manifest declares
+        SCHEDULE_EXACT_ALARM and USE_EXACT_ALARM. HexTrail does not use
+        exact alarms (notifications are delivered server-side via FCM),
+        and Play rejects USE_EXACT_ALARM for non-alarm/calendar apps.
+        Strip both via manifest-merger overrides. -->
+   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
+       tools:node="remove" />
+   <uses-permission android:name="android.permission.USE_EXACT_ALARM"
+       tools:node="remove" />
     <application
         android:label="HexTrail"
         android:name="${applicationName}"

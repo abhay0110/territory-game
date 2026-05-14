@@ -12,7 +12,20 @@
           "package_name": "com.hextrail.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "375048332121-bdalks1av9v47j77k0l9hikem6njvosc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.hextrail.app",
+            "certificate_hash": "f0219d297ec1f864cdfe2bf50591aa419acff3cf"
+          }
+        },
+        {
+          "client_id": "375048332121-56kh1v6e9csioirtbnbs3e7bt2a4jd1g.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDpqtQRRkTVvuQ-qDpBReRcNmpWv-_Gfws"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "375048332121-56kh1v6e9csioirtbnbs3e7bt2a4jd1g.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "375048332121-v94dui7p82ucag0ihi07oq0b8cpe19qt.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.hextrail.app"
+              }
+            }
+          ]
         }
       }
     }
