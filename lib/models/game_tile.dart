@@ -4,6 +4,12 @@ enum TileOwnership {
   enemy,
 }
 
+/// Threshold at which a tile is considered "hard-defended" for UI
+/// surfaces (tile-detail badge in Phase 1.2a, map overlay in 1.2b).
+/// Lives in the model layer because both `data/services` (renderer)
+/// and `presentation/widgets` (detail dialog) consume it.
+const int kDefendBadgeThreshold = 3;
+
 class GameTile {
   final String h3Index;
   final TileOwnership ownership;

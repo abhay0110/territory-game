@@ -78,6 +78,16 @@ class FeatureFlags {
   /// Backing column on captured_tiles increments regardless of flag.
   static const bool defendedCountUiEnabled = true;
 
+  /// Map overlay rendering of "🛡 N" labels at the centroid of every
+  /// visible tile whose `defendCount >= kDefendBadgeThreshold` (3+).
+  /// Pure render-path addition — does NOT change ownership colouring,
+  /// distance gating, or tile-detail sheet behavior.  When false the
+  /// `_defendBadgeMgr` annotation manager is never created and zero
+  /// labels are drawn.  Default OFF; flip to true after a trail-walk
+  /// dogfood confirms the labels don't clutter the dense corridor view.
+  /// See: lib/src/data/services/map_render_service.dart
+  static const bool defendedCountMapOverlayEnabled = false;
+
   /// Lifetime stats screen (captured / taken-over / defended / distance /
   /// days-played / longest-streak).  Backing user_stats table populated
   /// by Supabase trigger regardless of flag.

@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart' as geo;
 import 'package:h3_flutter/h3_flutter.dart' as h3lib;
 
 import '../../core/constants/launch_corridor.dart';
+import '../../core/feature_flags.dart';
 import '../../models/game_tile.dart';
 import '../../src/data/services/capture_service.dart';
 import '../../src/data/services/location_service.dart';
@@ -211,6 +212,17 @@ class MapController {
       radiusMeters: radiusMeters,
       alwaysVisibleHexes: alwaysVisibleHexes,
     );
+
+    // Phase 1.2b: defended-count overlay.  Gated by feature flag so the
+    // PointAnnotationManager is never created when the flag is OFF.
+    // Restricted to the same hexes that ownership rendering just drew
+    // (visibleCapturedHex) so off-screen badges are never created.
+    if (FeatureFlags.defendedCountMapOverlayEnabled) {
+      await mapRenderService.updateDefendBadges(
+        tiles: renderTiles,
+        visibleHexes: mapRenderService.visibleCapturedHex,
+      );
+    }
 
     return MapRefreshResult(
       currentHex: currentHex,

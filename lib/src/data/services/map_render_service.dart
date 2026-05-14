@@ -8,6 +8,35 @@ import '../../../core/constants/game_colors.dart';
 import '../../../core/constants/launch_corridor.dart';
 import '../../../models/game_tile.dart';
 
+/// Pure helper for [MapRenderService.updateDefendBadges]: returns the
+/// hex → defendCount map of every tile that should display a "🛡 N"
+/// label.  Lives at the top level (not on the service) so it can be
+/// unit-tested without spinning up Mapbox.
+///
+/// A tile qualifies when ALL of:
+///   * `defendCount >= threshold`,
+///   * `visibleHexes` is null OR contains the tile's lowercase h3 index,
+///   * the tile's h3 index is non-empty.
+///
+/// Duplicate h3 indices in [tiles] keep the LAST occurrence's count
+/// (matches the by-hex map collapse used elsewhere in the renderer).
+@visibleForTesting
+Map<String, int> selectDefendBadges({
+  required Iterable<GameTile> tiles,
+  Set<String>? visibleHexes,
+  int threshold = kDefendBadgeThreshold,
+}) {
+  final result = <String, int>{};
+  for (final tile in tiles) {
+    if (tile.defendCount < threshold) continue;
+    final hex = tile.h3Index.toLowerCase();
+    if (hex.isEmpty) continue;
+    if (visibleHexes != null && !visibleHexes.contains(hex)) continue;
+    result[hex] = tile.defendCount;
+  }
+  return result;
+}
+
 class MapRenderService {
   MapRenderService({required this.h3Instance, required this.h3Resolution});
 
@@ -24,6 +53,11 @@ class MapRenderService {
   mb.PolygonAnnotationManager? _selectionMgr;
   mb.PolygonAnnotationManager? _recommendationHaloMgr;
   mb.PolygonAnnotationManager? _recommendationMgr;
+  // Phase 1.2b: "🛡 N" labels at the centroid of hard-defended tiles.
+  // Created lazily by [_ensureDefendBadgeMgr] only when the caller asks
+  // for the overlay, so when the feature flag is OFF this field stays
+  // null and the renderer never invokes the underlying point pipeline.
+  mb.PointAnnotationManager? _defendBadgeMgr;
   mb.PolygonAnnotation? _currentPoly;
   mb.PolygonAnnotation? _currentHaloPoly;
   mb.PolygonAnnotation? _currentShadowPoly;
@@ -42,6 +76,11 @@ class MapRenderService {
   final Map<String, ({TileOwnership ownership, bool isProtected})>
   _visibleCapturedState = {};
   final Map<String, ({double lat, double lng})> _centroidCache = {};
+
+  // Phase 1.2b state. Kept separate from captured-polygon state so the
+  // overlay can be torn down independently of ownership rendering.
+  final Map<String, mb.PointAnnotation> _defendBadgeByHex = {};
+  final Map<String, int> _defendBadgeCountByHex = {};
 
   /// When true, off-corridor captured tiles are rendered very faintly and the
   /// corridor lane is drawn with stronger emphasis.  Set by the map screen
@@ -163,6 +202,14 @@ class MapRenderService {
         .createPolygonAnnotationManager();
     _recommendationMgr ??= await _map!.annotations
         .createPolygonAnnotationManager();
+    // NB: defend-badge PointAnnotationManager is created on demand in
+    // [_ensureDefendBadgeMgr] (Phase 1.2b feature-flag gated).
+  }
+
+  Future<void> _ensureDefendBadgeMgr() async {
+    if (_map == null) return;
+    _defendBadgeMgr ??=
+        await _map!.annotations.createPointAnnotationManager();
   }
 
   mb.PolygonAnnotationOptions _polygonOptionsForCell(
@@ -481,6 +528,113 @@ class MapRenderService {
       tiles: tiles,
       alwaysVisibleHexes: alwaysVisibleHexes,
     );
+  }
+
+  // ── Phase 1.2b: defended-count map overlay ─────────────────────────────
+  //
+  // Pure helper [selectDefendBadges] decides which hexes need a "🛡 N"
+  // label; [updateDefendBadges] is the renderer-side diff/apply that
+  // calls into the Mapbox PointAnnotationManager.  Splitting the two
+  // keeps the decision logic unit-testable without spinning up Mapbox.
+
+  /// Diffs the current set of rendered "🛡 N" badges against [tiles] and
+  /// adds/updates/removes annotations to match.  No-op (returns
+  /// immediately) when:
+  ///   * the map has not been attached yet, or
+  ///   * the resulting badge set is empty AND no badges are currently
+  ///     rendered (cheap fast-path on the common case).
+  ///
+  /// [visibleHexes] limits the overlay to currently-rendered tiles; pass
+  /// `null` to render badges for every qualifying tile in [tiles].  Most
+  /// callers should pass the same set used for ownership rendering so
+  /// off-screen badges are never created.
+  Future<void> updateDefendBadges({
+    required Iterable<GameTile> tiles,
+    Set<String>? visibleHexes,
+    int threshold = kDefendBadgeThreshold,
+  }) async {
+    final desired = selectDefendBadges(
+      tiles: tiles,
+      visibleHexes: visibleHexes,
+      threshold: threshold,
+    );
+
+    // Fast-path: no badges desired and none currently rendered.  Avoids
+    // creating the PointAnnotationManager at all when the feature flag
+    // is on but the player is in a low-defend area.
+    if (desired.isEmpty && _defendBadgeByHex.isEmpty) return;
+    if (_map == null) return;
+
+    await _ensureDefendBadgeMgr();
+    final mgr = _defendBadgeMgr;
+    if (mgr == null) return;
+
+    // 1. Remove badges that are no longer desired.
+    for (final hex in _defendBadgeByHex.keys.toList()) {
+      if (!desired.containsKey(hex)) {
+        final ann = _defendBadgeByHex.remove(hex);
+        _defendBadgeCountByHex.remove(hex);
+        if (ann != null) {
+          try {
+            await mgr.delete(ann);
+          } catch (_) {
+            // Annotation may have been GC'd by a style reload; safe to ignore.
+          }
+        }
+      }
+    }
+
+    // 2. Add new badges + update count-changed badges.
+    for (final entry in desired.entries) {
+      final hex = entry.key;
+      final count = entry.value;
+      final existingCount = _defendBadgeCountByHex[hex];
+      if (existingCount == count) continue;
+
+      // Either new or count-changed: drop the old, create fresh.
+      final old = _defendBadgeByHex.remove(hex);
+      if (old != null) {
+        try {
+          await mgr.delete(old);
+        } catch (_) {}
+      }
+
+      try {
+        final cell = BigInt.parse(hex, radix: 16);
+        final c = cellCentroid(cell, hex);
+        final options = mb.PointAnnotationOptions(
+          geometry: mb.Point(coordinates: mb.Position(c.lng, c.lat)),
+          textField: '🛡 $count',
+          textSize: 12.0,
+          textColor: 0xFFFFFFFF,
+          textHaloColor: 0xCC000000,
+          textHaloWidth: 1.4,
+        );
+        final ann = await mgr.create(options);
+        _defendBadgeByHex[hex] = ann;
+        _defendBadgeCountByHex[hex] = count;
+      } catch (_) {
+        // Pure decoration — never let a bad hex break ownership rendering.
+      }
+    }
+  }
+
+  /// Tear down every "🛡 N" badge.  Safe to call when no badges exist.
+  Future<void> clearDefendBadges() async {
+    if (_defendBadgeByHex.isEmpty) return;
+    final mgr = _defendBadgeMgr;
+    if (mgr == null) {
+      _defendBadgeByHex.clear();
+      _defendBadgeCountByHex.clear();
+      return;
+    }
+    for (final ann in _defendBadgeByHex.values) {
+      try {
+        await mgr.delete(ann);
+      } catch (_) {}
+    }
+    _defendBadgeByHex.clear();
+    _defendBadgeCountByHex.clear();
   }
 
   /// Draws a selection ring (bright white/cyan outline, faint fill) around the

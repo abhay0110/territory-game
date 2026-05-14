@@ -5,11 +5,6 @@ import 'package:flutter/material.dart';
 import '../../../core/feature_flags.dart';
 import '../../../models/game_tile.dart';
 
-/// Minimum defend count needed before the 🛡️ badge surfaces. Below this is
-/// just normal turnover; ≥3 means the tile is genuinely contested and
-/// the user has earned a small status marker.
-const int kDefendBadgeThreshold = 3;
-
 Future<void> showTileDetailsDialog(
   BuildContext context, {
   required String ownerLabel,
