@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/feature_flags.dart';
 import '../../../core/theme/game_ui_tokens.dart';
+import '../../data/services/badge_service.dart';
 import '../../data/services/player_stats_service.dart';
 import '../../data/services/streak_service.dart';
 import 'frosted_overlay_card.dart';
@@ -27,6 +28,10 @@ class _PlayerStatsSheet extends StatefulWidget {
 class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
   PlayerStats? _stats;
   StreakState? _streak;
+  // Phase 1.4: list is non-null only when the feature flag is on AND
+  // the fetch completed.  When the flag is off we never construct
+  // BadgeService so no Supabase round-trip is made.
+  List<PeriodicBadge>? _badges;
   bool _showFreezeBanner = false;
   bool _loading = true;
 
@@ -52,11 +57,19 @@ class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
         streak = null;
       }
     }
+    // Phase 1.4: badges fetch is also best-effort and entirely skipped
+    // when the flag is off.  fetchMine() already swallows errors and
+    // returns [] on failure, so this never throws.
+    List<PeriodicBadge>? badges;
+    if (FeatureFlags.periodicBadgesUiEnabled) {
+      badges = await BadgeService().fetchMine();
+    }
     final stats = await statsFuture;
     if (!mounted) return;
     setState(() {
       _stats = stats;
       _streak = streak;
+      _badges = badges;
       _showFreezeBanner = banner;
       _loading = false;
     });
@@ -236,6 +249,23 @@ class _PlayerStatsSheetState extends State<_PlayerStatsSheet> {
                 .toStringAsFixed(1),
           ),
         ],
+
+        // ── Achievements (Phase 1.4) ──
+        // Rendered ONLY when the flag is on AND the fetch returned at
+        // least one badge.  An empty list silently hides the section
+        // so a freshly-installed account doesn't see a placeholder
+        // "no achievements yet" line (no-op = invisible).
+        if (FeatureFlags.periodicBadgesUiEnabled &&
+            _badges != null &&
+            _badges!.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          _SectionHeader(label: 'ACHIEVEMENTS'),
+          const SizedBox(height: 10),
+          for (final badge in _badges!) ...[
+            _AchievementRow(badge: badge),
+            const SizedBox(height: 6),
+          ],
+        ],
       ],
     );
   }
@@ -332,6 +362,48 @@ class _StatRow extends StatelessWidget {
             color: GameUiTokens.textHi,
             size: 14,
             weight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One row in the ACHIEVEMENTS section (Phase 1.4).  Permanent badge
+/// awarded by the server cron; the row is read-only.
+///
+/// Layout mirrors `_StatRow` (label-left / value-right) so the section
+/// reads as a continuation of the stats list rather than a separate
+/// gallery — keeps the sheet visually quiet.
+class _AchievementRow extends StatelessWidget {
+  final PeriodicBadge badge;
+  const _AchievementRow({required this.badge});
+
+  @override
+  Widget build(BuildContext context) {
+    // Rank-driven medal glyph.  Falls back to the generic trophy for
+    // any future ranks beyond top-3.
+    final medal = switch (badge.rank) {
+      1 => '🥇',
+      2 => '🥈',
+      3 => '🥉',
+      _ => '🏆',
+    };
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1, right: 8),
+          child: Text(medal, style: const TextStyle(fontSize: 16)),
+        ),
+        Expanded(
+          child: Text(
+            badge.label,
+            style: GameUiText.body(
+              color: GameUiTokens.textHi,
+              size: 13,
+              weight: FontWeight.w600,
+            ),
           ),
         ),
       ],
