@@ -38,6 +38,7 @@ class CaptureService {
     String hexLower, {
     DateTime? capturedAt,
     DateTime? lastRefreshedAt,
+    int defendCount = 0,
   }) {
     final capturedTime = capturedAt ?? DateTime.now();
     final refreshedAt = lastRefreshedAt ?? capturedTime;
@@ -51,6 +52,7 @@ class CaptureService {
         const Duration(hours: GameRules.tileProtectionHours),
       ),
       isVisible: true,
+      defendCount: defendCount,
     );
   }
 
@@ -58,14 +60,16 @@ class CaptureService {
     String hexLower, {
     DateTime? capturedAt,
     DateTime? lastRefreshedAt,
+    int? defendCount,
   }) {
     // Always overwrite when real timestamps are provided so Supabase data
     // replaces the DateTime.now() defaults created during loadFromPrefs.
-    if (capturedAt != null || lastRefreshedAt != null) {
+    if (capturedAt != null || lastRefreshedAt != null || defendCount != null) {
       _capturedTilesByHex[hexLower] = _buildOwnedTile(
         hexLower,
         capturedAt: capturedAt,
         lastRefreshedAt: lastRefreshedAt,
+        defendCount: defendCount ?? 0,
       );
     } else {
       _capturedTilesByHex.putIfAbsent(
@@ -201,7 +205,7 @@ class CaptureService {
   Future<void> loadFromSupabase(String userId) async {
     final rows = await supabaseClient
         .from('user_tile_captures')
-        .select('h3_hex, captured_at, last_refreshed_at')
+        .select('h3_hex, captured_at, last_refreshed_at, defend_count')
         .eq('user_id', userId)
         .eq('h3_res', h3Resolution) as List<dynamic>?;
     if (rows == null) return;
@@ -215,6 +219,7 @@ class CaptureService {
           hex,
           capturedAt: _parseDateTime(r['captured_at']),
           lastRefreshedAt: _parseDateTime(r['last_refreshed_at']),
+          defendCount: _parseDefendCount(r['defend_count']),
         );
       }
     }
@@ -301,6 +306,20 @@ class CaptureService {
   DateTime? _parseDateTime(dynamic raw) {
     if (raw is! String || raw.isEmpty) return null;
     return DateTime.tryParse(raw);
+  }
+
+  /// Tolerant parse for `defend_count` from a Supabase row. Defaults to 0
+  /// when missing, null, or not a number — older rows predating the
+  /// Phase 1.2a column will surface as 0 (no badge), which is the
+  /// correct collapsed state.
+  int _parseDefendCount(dynamic raw) {
+    if (raw is int) return raw < 0 ? 0 : raw;
+    if (raw is num) return raw.toInt() < 0 ? 0 : raw.toInt();
+    if (raw is String) {
+      final parsed = int.tryParse(raw);
+      if (parsed != null) return parsed < 0 ? 0 : parsed;
+    }
+    return 0;
   }
 
   Future<void> refreshNearbyOwnersForHex(

@@ -2408,6 +2408,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
       capturedSince: _formatSince(_currentGameTile.capturedAt),
       ownership: _currentGameTile.ownership,
       protectedUntil: _currentGameTile.protectedUntil,
+      defendCount: _currentGameTile.defendCount,
     );
   }
 

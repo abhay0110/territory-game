@@ -2,7 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/feature_flags.dart';
 import '../../../models/game_tile.dart';
+
+/// Minimum defend count needed before the 🛡️ badge surfaces. Below this is
+/// just normal turnover; ≥3 means the tile is genuinely contested and
+/// the user has earned a small status marker.
+const int kDefendBadgeThreshold = 3;
 
 Future<void> showTileDetailsDialog(
   BuildContext context, {
@@ -10,6 +16,7 @@ Future<void> showTileDetailsDialog(
   required String capturedSince,
   required TileOwnership ownership,
   required DateTime? protectedUntil,
+  int defendCount = 0,
 }) {
   return showDialog<void>(
     context: context,
@@ -18,6 +25,7 @@ Future<void> showTileDetailsDialog(
       capturedSince: capturedSince,
       ownership: ownership,
       protectedUntil: protectedUntil,
+      defendCount: defendCount,
     ),
   );
 }
@@ -28,12 +36,14 @@ class _TileDetailsDialog extends StatefulWidget {
     required this.capturedSince,
     required this.ownership,
     required this.protectedUntil,
+    required this.defendCount,
   });
 
   final String ownerLabel;
   final String capturedSince;
   final TileOwnership ownership;
   final DateTime? protectedUntil;
+  final int defendCount;
 
   @override
   State<_TileDetailsDialog> createState() => _TileDetailsDialogState();
@@ -83,6 +93,8 @@ class _TileDetailsDialogState extends State<_TileDetailsDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final showBadge = FeatureFlags.defendedCountUiEnabled &&
+        widget.defendCount >= kDefendBadgeThreshold;
     return AlertDialog(
       title: const Text('Hex Details'),
       content: Column(
@@ -96,6 +108,23 @@ class _TileDetailsDialogState extends State<_TileDetailsDialog> {
           Text('Remaining protection: ${_remainingProtectionLabel()}'),
           const SizedBox(height: 6),
           Text('Captured: ${widget.capturedSince}'),
+          if (showBadge) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Text('🛡️', style: TextStyle(fontSize: 16)),
+                const SizedBox(width: 6),
+                Text(
+                  'Defended ${widget.defendCount}×',
+                  style: const TextStyle(
+                    color: Color(0xFFF59E0B),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
       actions: [
