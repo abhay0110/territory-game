@@ -58,4 +58,38 @@ class FeatureFlags {
   /// reconciliation flag above is the safety net that makes correctness
   /// independent of FCM delivery.
   static const bool fcmTileLostInvalidationEnabled = true;
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase 1 — Solo retention features (post build 14/16).
+  //
+  // All default OFF until each feature is implemented + dogfooded on a
+  // real trail walk.  Flip to true in the same commit that promotes the
+  // feature to internal/closed builds.  Each flag gates ONLY user-visible
+  // surfaces — backing data tables / triggers may run regardless so we
+  // don't lose history while a flag is off.
+  // See: /memories/repo/feature_roadmap_post_build16.md
+  // ───────────────────────────────────────────────────────────────────
+
+  /// Daily-capture streak counter on the home screen (with weekly freeze).
+  /// Backing data accumulates from launch; flag only gates the UI.
+  static const bool streakSystemEnabled = false;
+
+  /// "Defended N times" badge on tiles you've reclaimed ≥3 times.
+  /// Backing column on captured_tiles increments regardless of flag.
+  static const bool defendedCountUiEnabled = false;
+
+  /// Lifetime stats screen (captured / taken-over / defended / distance /
+  /// days-played / longest-streak).  Backing user_stats table populated
+  /// by Supabase trigger regardless of flag.
+  static const bool lifetimeStatsUiEnabled = false;
+
+  /// Permanent weekly + monthly badges (top-3 / streak / volume).
+  /// Backing scheduled job awards badges regardless of flag once shipped;
+  /// the flag only controls whether the profile timeline is rendered.
+  /// DO NOT flip this on with retroactive pre-launch awards — see roadmap.
+  static const bool periodicBadgesUiEnabled = false;
+
+  /// Weekly recap push notification (Sunday eve).  Requires ≥2 weeks of
+  /// per-user data to feel meaningful — do not flip on before then.
+  static const bool weeklyRecapEnabled = false;
 }
