@@ -72,11 +72,11 @@ class FeatureFlags {
 
   /// Daily-capture streak counter on the home screen (with weekly freeze).
   /// Backing data accumulates from launch; flag only gates the UI.
-  static const bool streakSystemEnabled = false;
+  static const bool streakSystemEnabled = true;
 
   /// "Defended N times" badge on tiles you've reclaimed ≥3 times.
   /// Backing column on captured_tiles increments regardless of flag.
-  static const bool defendedCountUiEnabled = false;
+  static const bool defendedCountUiEnabled = true;
 
   /// Lifetime stats screen (captured / taken-over / defended / distance /
   /// days-played / longest-streak).  Backing user_stats table populated
