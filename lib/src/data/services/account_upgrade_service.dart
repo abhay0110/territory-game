@@ -23,15 +23,26 @@ class AccountUpgradeService {
 
   final SupabaseClient _client;
 
-  /// True when the current session is an anonymous user (no email/phone yet).
+  /// True when the current session is an anonymous user (no linked
+  /// OAuth / email / phone identity).
+  ///
+  /// Uses `currentUser.identities` as the source of truth rather than an
+  /// email/phone presence heuristic, because Apple Sign-In frequently
+  /// returns no email (Hide My Email, scope denied, re-sign after first
+  /// auth) which would otherwise leave the app stuck reporting the
+  /// session as anonymous after a successful link.
   bool get isAnonymous {
     final user = _client.auth.currentUser;
     if (user == null) return false;
-    final hasEmail = (user.email ?? '').isNotEmpty;
-    final hasPhone = (user.phone ?? '').isNotEmpty;
-    // Supabase exposes `isAnonymous` on the user object in newer versions;
-    // fall back to identity inspection for safety.
-    return user.isAnonymous == true || (!hasEmail && !hasPhone);
+    if (user.isAnonymous == true) return true;
+    final identities = user.identities ?? const [];
+    return !identities.any(
+      (i) =>
+          i.provider == 'google' ||
+          i.provider == 'apple' ||
+          i.provider == 'email' ||
+          i.provider == 'phone',
+    );
   }
 
   /// Sends a confirmation magic-link to [email].  When the user clicks it,

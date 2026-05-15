@@ -129,9 +129,22 @@ class IdentityLinkService {
   bool get isCurrentSessionAnonymous {
     final user = _client.auth.currentUser;
     if (user == null) return false;
-    final hasEmail = (user.email ?? '').isNotEmpty;
-    final hasPhone = (user.phone ?? '').isNotEmpty;
-    return user.isAnonymous == true || (!hasEmail && !hasPhone);
+    if (user.isAnonymous == true) return true;
+    // Source of truth: an account that has been linked to an OAuth or
+    // email/phone provider has a corresponding identity row.  Anonymous
+    // sessions either have an empty list or only the 'anonymous'
+    // provider.  Email/phone heuristics are unsafe because Apple
+    // Sign-In often returns no email (Hide My Email, scope denied,
+    // or re-sign after first auth) which would otherwise leave the
+    // app stuck in an "anonymous" UI state after a successful link.
+    final identities = user.identities ?? const [];
+    return !identities.any(
+      (i) =>
+          i.provider == 'google' ||
+          i.provider == 'apple' ||
+          i.provider == 'email' ||
+          i.provider == 'phone',
+    );
   }
 
   bool get isLinked {
