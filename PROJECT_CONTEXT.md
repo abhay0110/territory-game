@@ -5,7 +5,7 @@
 > rules we work under, and the state of the codebase. Update it at the
 > end of every shipped build.
 
-Last updated: May 15, 2026 — post build +24.
+Last updated: May 15, 2026 — +24 promoted to closed + external testing.
 
 ---
 
@@ -77,9 +77,11 @@ movement. Not AllTrails. Not a pedometer. Not a social app.
 | **+20** | `20b1c39` | `feat/phase1-4-badges` | Periodic badges (weekly/monthly server-awarded) | `periodicBadgesUiEnabled` |
 | **+21** | `ead6d7a` | `feat/phase1-5-recap` | Weekly recap data + screen + FCM parser | `weeklyRecapEnabled` |
 | **+22** | `002b604` | `feat/account-link` | Fix Apple sign-in stuck-anonymous menu state + iOS `NSLocationAlwaysAndWhenInUseUsageDescription` | n/a (bugfix) |
-| **+24** | (pending) | `feat/wakelock-and-onhex-hint` (pending) | Wakelock during active session + on-hex auto-capture hint + sign-out menu item + lifecycle/wakelock event logging | `keepScreenOnDuringSessionEnabled` (default ON, kill-switch) |
+| **+24** | `ce60e9e` | `feat/wakelock-and-onhex-hint` | Wakelock during active session + on-hex auto-capture hint + sign-out menu item + lifecycle/wakelock event logging | `keepScreenOnDuringSessionEnabled` (default ON, kill-switch) |
 
-+19/+20/+21 are pushed (origin tracking branches exist). +22 and +24 are local-only — not pushed yet.
+All branches +19/+20/+21/+22/+24 are pushed to origin.
+
+**+24 promoted to internal + closed + external testing on May 15, 2026** (cleaned DB beforehand to remove stranded anon UIDs from pre-+24 dev — see `/memories/repo/build25_followups.md` item #1).
 
 **Note:** there is no +23. Version skipped during the +24 build cut.
 
@@ -182,13 +184,21 @@ to execute all. To run one: `flutter test test/unit/<file>.dart`.
 
 ## Active backlog (small chores)
 
-- **Activity import (GPX / Strava / HealthKit / Health Connect).** The
-  *real* fix for "my phone slept and I lost my ride." Wakelock (+24) is
-  the interim. Import lets a rider replay a completed activity against
-  the hex grid and retroactively claim hexes. Multi-build effort —
-  scope it in roadmap before starting.
-- **Push the local branches** (`feat/account-link` with +22, the new
-  +24 branch when cut) when ready.
+- **Build +25 — dogfood follow-ups.** Five small items surfaced by
+  the +24 dogfood. See `/memories/repo/build25_followups.md` for full
+  detail. Summary: anon re-sign-in race fix, tied-#1 pressure card,
+  don't-lock-the-phone tooltip, map-screen "Set display name" should
+  show current name, home-screen save-progress affordance for anon
+  users.
+- **Activity import (GPX / Strava / Garmin / HealthKit / Health
+  Connect).** The *real* fix for "my phone slept and I lost my ride."
+  Wakelock (+24) is the interim. Multi-build effort — scope before
+  starting. Priority justification: see
+  `/memories/repo/background_location_roadmap.md`.
+- **Background location (`Always Allow`) opt-in upgrade.** Shipped
+  AFTER activity import, as a power-user upgrade. Multi-week App
+  Store / Play Store review path. Full plan in
+  `/memories/repo/background_location_roadmap.md`.
 - **iOS IPAs via Xcode** for each branch when promoting to TestFlight.
 
 ---
