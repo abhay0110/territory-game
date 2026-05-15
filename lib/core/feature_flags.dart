@@ -102,4 +102,14 @@ class FeatureFlags {
   /// Weekly recap push notification (Sunday eve).  Requires ≥2 weeks of
   /// per-user data to feel meaningful — do not flip on before then.
   static const bool weeklyRecapEnabled = false;
+
+  /// Keep the screen awake for the duration of an active capture
+  /// session so iOS/Android continue delivering GPS callbacks (the app
+  /// has no background-location entitlement and intentionally cancels
+  /// capture timers when backgrounded).  Default ON — this is the
+  /// interim solution until activity-import (GPX/Strava/HealthKit)
+  /// lands.  Toggle to false ONLY as a kill-switch if a build regression
+  /// causes the wakelock to leak past session-end.
+  /// See: /memories/repo/feature_roadmap_post_build16.md (build +24).
+  static const bool keepScreenOnDuringSessionEnabled = true;
 }

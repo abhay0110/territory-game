@@ -5,7 +5,7 @@
 > rules we work under, and the state of the codebase. Update it at the
 > end of every shipped build.
 
-Last updated: May 14, 2026 — post build +21.
+Last updated: May 15, 2026 — post build +24.
 
 ---
 
@@ -76,8 +76,12 @@ movement. Not AllTrails. Not a pedometer. Not a social app.
 | **+19** | `031dbb3` | `feat/phase1-2b-overlay` | Defended-count map overlay (SymbolLayer) | `defendedCountMapOverlayEnabled` |
 | **+20** | `20b1c39` | `feat/phase1-4-badges` | Periodic badges (weekly/monthly server-awarded) | `periodicBadgesUiEnabled` |
 | **+21** | `ead6d7a` | `feat/phase1-5-recap` | Weekly recap data + screen + FCM parser | `weeklyRecapEnabled` |
+| **+22** | `002b604` | `feat/account-link` | Fix Apple sign-in stuck-anonymous menu state + iOS `NSLocationAlwaysAndWhenInUseUsageDescription` | n/a (bugfix) |
+| **+24** | (pending) | `feat/wakelock-and-onhex-hint` (pending) | Wakelock during active session + on-hex auto-capture hint + sign-out menu item + lifecycle/wakelock event logging | `keepScreenOnDuringSessionEnabled` (default ON, kill-switch) |
 
-All three of +19/+20/+21 are local-only — not pushed yet.
++19/+20/+21 are pushed (origin tracking branches exist). +22 and +24 are local-only — not pushed yet.
+
+**Note:** there is no +23. Version skipped during the +24 build cut.
 
 ---
 
@@ -97,10 +101,17 @@ All three of +19/+20/+21 are local-only — not pushed yet.
 | Defended-count map overlay | `selectDefendBadges()` + `MapRenderService.updateDefendBadges()` | `defendedCountMapOverlayEnabled` | shipped +19 |
 | Periodic badges | `add_user_badges.sql` + `award-periodic-badges` edge fn + `BadgeService` + ACHIEVEMENTS section | `periodicBadgesUiEnabled` | shipped +20 |
 | Weekly recap | `lib/features/recap/{recap_summary,recap_data_loader,recap_screen}.dart` + `parseRecapPayload` | `weeklyRecapEnabled` | shipped +21 |
+| Apple sign-in stuck-menu fix + iOS Always-location string | `IdentityLinkService` listener + `ios/Runner/Info.plist` | always on | shipped +22 |
+| Wakelock during active session | `_acquireSessionWakelock`/`_releaseSessionWakelock` in `map_screen.dart` (start/stop/dispose); `wakelock_plus: ^1.2.8` | `keepScreenOnDuringSessionEnabled` (kill-switch, default ON) | shipped +24 |
+| On-hex auto-capture hint | `tile_details_dialog.dart` `isOnThisHex` param + green hint container | always on | shipped +24 |
+| Sign-out menu item | `_handleSignOut()` in `map_screen.dart`, both popup menus, confirmation-gated | always on | shipped +24 |
+| Session lifecycle + wakelock event log | `MapEventType.{sessionBackgrounded,sessionForegrounded,wakelockAcquired,wakelockReleased,importInitiated,importCompleted}` | always on | shipped +24 |
 
 ---
 
-## Test inventory (254 tests, all passing as of +21)
+## Test inventory (226 tests, all passing as of +24)
+
+*Note: prior count of "254" in the +21 update was stale; actual `flutter test` reports 226 passing + 1 skipped placeholder. No new tests added in +22 or +24 — both are I/O-bound (auth listener, plugin call, lifecycle hook) and intentionally not unit-tested per discipline rule #6.*
 
 Each test file guards a specific feature. Run `flutter test test/unit/`
 to execute all. To run one: `flutter test test/unit/<file>.dart`.
@@ -154,15 +165,30 @@ to execute all. To run one: `flutter test test/unit/<file>.dart`.
 - [ ] Verify ≥2 weeks of `user_tile_captures` data per active tester.
 - [ ] Flip flag in a new build that also includes the navigator hook.
 
+### Build +22 — Apple sign-in fix + iOS Always-location string
+- No backend deploy needed. Pure client fix.
+- iOS `Info.plist` now declares `NSLocationAlwaysAndWhenInUseUsageDescription` — required for App Store review even though we do NOT request `authorizationStatus.always` at runtime (we hold a wakelock instead, see +24).
+
+### Build +24 — `keepScreenOnDuringSessionEnabled` + on-hex hint + sign-out
+- Kill-switch flag, default ON. No flag flip needed for promote.
+- **Personal dogfood gate (do BEFORE promote):** one Burke ride, pocket the phone, ride, stop session, confirm:
+  1. distance > 0 and at least one hex captured (proves wakelock kept GPS alive),
+  2. screen lock returns to normal after stop-session (proves no wakelock leak — the leak failure mode is the only real risk),
+  3. on-hex info dialog shows the green "keep moving to auto-capture" hint when standing on a non-mine capturable hex.
+- After dogfood: promote to internal, bake ~24h, then closed + external. Reply to tester ONLY after build is in their hands.
+- Reminder: do NOT bundle a Phase 1 flag flip (+19 overlay, +20 badges, +21 recap) into the +24 promote — keep bisect target clean.
+
 ---
 
 ## Active backlog (small chores)
 
-- **Sign-out UI affordance.** `IdentityLinkService.signOut()` exists
-  but no UI invokes it. Add to PlayerStatsSheet or popup menu (~15 LOC).
-  Useful for dogfooding re-auth without uninstall+reinstall.
-- **Push the three local branches** (`feat/phase1-2b-overlay`,
-  `feat/phase1-4-badges`, `feat/phase1-5-recap`) when ready.
+- **Activity import (GPX / Strava / HealthKit / Health Connect).** The
+  *real* fix for "my phone slept and I lost my ride." Wakelock (+24) is
+  the interim. Import lets a rider replay a completed activity against
+  the hex grid and retroactively claim hexes. Multi-build effort —
+  scope it in roadmap before starting.
+- **Push the local branches** (`feat/account-link` with +22, the new
+  +24 branch when cut) when ready.
 - **iOS IPAs via Xcode** for each branch when promoting to TestFlight.
 
 ---

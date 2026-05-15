@@ -7,6 +7,12 @@ enum MapEventType {
   rivalTakeover,
   sessionStarted,
   sessionStopped,
+  sessionBackgrounded,
+  sessionForegrounded,
+  wakelockAcquired,
+  wakelockReleased,
+  importInitiated,
+  importCompleted,
   milestoneUnlocked,
 }
 

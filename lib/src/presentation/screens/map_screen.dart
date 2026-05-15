@@ -10,6 +10,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 import 'package:h3_flutter/h3_flutter.dart' as h3;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/constants/game_colors.dart';
 import '../../../core/constants/game_rules.dart';
@@ -741,6 +742,10 @@ class _MapScreenState extends ConsumerState<MapScreen>
     if (FeatureFlags.fcmTileLostInvalidationEnabled) {
       tileLostEvents.removeListener(_handleTileLostListener);
     }
+    // Safety net: if the screen is destroyed mid-session (rare — would
+    // imply the app is being torn down), make sure we don't leak the
+    // wakelock past the widget's life.  No-op if not held.
+    unawaited(_releaseSessionWakelock(reason: 'screen_dispose'));
     super.dispose();
   }
 
@@ -1135,6 +1140,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
       (id: 'first_session_start', title: '🎬 First session started'),
     ]);
     _eventLog.log(MapEventType.sessionStarted, 'Session started');
+    unawaited(_acquireSessionWakelock());
     _updateCurrentObjective();
   }
 
@@ -2205,9 +2211,22 @@ class _MapScreenState extends ConsumerState<MapScreen>
         _captureProgressTimer = null;
         _recommendedTilePulseTimer?.cancel();
         _recommendedTilePulseTimer = null;
+        if (_sessionActive) {
+          _eventLog.log(
+            MapEventType.sessionBackgrounded,
+            'App backgrounded during active session',
+            metadata: {'lifecycleState': state.name},
+          );
+        }
         break;
       case AppLifecycleState.resumed:
         if (!mounted) return;
+        if (_sessionActive) {
+          _eventLog.log(
+            MapEventType.sessionForegrounded,
+            'App foregrounded during active session',
+          );
+        }
         _syncActiveHexHalo();
         unawaited(_syncRecommendedTileGlow());
         break;
@@ -2491,6 +2510,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
       ownership: _currentGameTile.ownership,
       protectedUntil: _currentGameTile.protectedUntil,
       defendCount: _currentGameTile.defendCount,
+      isOnThisHex: true,
     );
   }
 
@@ -2583,6 +2603,89 @@ class _MapScreenState extends ConsumerState<MapScreen>
         service: linkService,
         localProgressCount: localProgressCount,
       ),
+    );
+  }
+
+  /// Sign out of the current Supabase session.  Confirmation-gated.
+  /// Useful for dogfooding re-auth and for testers who linked the wrong
+  /// provider and need to start over without a reinstall.  After sign-out
+  /// the next `supabase_flutter` request restores anonymous auth, so the
+  /// device returns to anon-mode immediately.
+  Future<void> _handleSignOut() async {
+    final linkService =
+        IdentityLinkService(client: _captureService.supabaseClient);
+    final providerLabel = linkService.linkedProviderLabel ?? 'this account';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: Text(
+          'You will be signed out of $providerLabel and the app will '
+          'return to anonymous mode. Your captures stay safe on the '
+          'server — sign back in with the same provider to restore them.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await linkService.signOut();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SignOut] failed: $e');
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Signed out.')),
+    );
+  }
+
+  // ── Wakelock (build +24) ──────────────────────────────────────────────
+  //
+  // Active sessions need GPS to keep streaming; iOS/Android suspend the
+  // app within seconds of screen-off and the app intentionally has NO
+  // background-location entitlement.  Holding a wakelock for the
+  // duration of a session is the interim unblock until activity-import
+  // (GPX/Strava/HealthKit) lands.  Default model: start session = ON,
+  // stop session = OFF.  No user toggle (see roadmap rationale).
+
+  bool _wakelockHeld = false;
+
+  Future<void> _acquireSessionWakelock() async {
+    if (!FeatureFlags.keepScreenOnDuringSessionEnabled) return;
+    if (_wakelockHeld) return;
+    try {
+      await WakelockPlus.enable();
+      _wakelockHeld = true;
+      _eventLog.log(
+        MapEventType.wakelockAcquired,
+        'Screen kept awake for session',
+      );
+    } catch (e) {
+      if (kDebugMode) debugPrint('[Wakelock] enable failed: $e');
+    }
+  }
+
+  Future<void> _releaseSessionWakelock({String reason = 'session_end'}) async {
+    if (!_wakelockHeld) return;
+    try {
+      await WakelockPlus.disable();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[Wakelock] disable failed: $e');
+    }
+    _wakelockHeld = false;
+    _eventLog.log(
+      MapEventType.wakelockReleased,
+      'Screen lock restored',
+      metadata: {'reason': reason},
     );
   }
 
@@ -3891,8 +3994,11 @@ class _MapScreenState extends ConsumerState<MapScreen>
           'blocked': blocked,
           'takeovers': takeovers,
           'distanceMeters': distance,
+          'durationSec': durationSec,
+          'endReason': 'user_stop',
         },
       );
+      unawaited(_releaseSessionWakelock(reason: 'user_stop'));
 
       await _showSessionSummaryDialog(mode: mode);
       _updateCurrentObjective();
@@ -3924,6 +4030,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
       (id: 'first_session_start', title: '🎬 First session started'),
     ]);
     _eventLog.log(MapEventType.sessionStarted, 'Session started');
+    unawaited(_acquireSessionWakelock());
     _startLeaderboardRefreshTimer();
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -4007,6 +4114,9 @@ class _MapScreenState extends ConsumerState<MapScreen>
           case 'save_progress':
             unawaited(_showSaveProgressBottomSheet());
             break;
+          case 'sign_out':
+            unawaited(_handleSignOut());
+            break;
           case 'debug_upgrade_account':
             unawaited(_showHiddenAccountUpgradeDialog());
             break;
@@ -4039,7 +4149,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
               value: 'save_progress',
               child: Text('Save your progress…'),
             )
-          else
+          else ...[
             PopupMenuItem<String>(
               enabled: false,
               child: Text(
@@ -4047,6 +4157,11 @@ class _MapScreenState extends ConsumerState<MapScreen>
                 '${IdentityLinkService(client: _captureService.supabaseClient).linkedProviderLabel ?? 'an account'}',
               ),
             ),
+            const PopupMenuItem<String>(
+              value: 'sign_out',
+              child: Text('Sign out…'),
+            ),
+          ],
         if (kDebugMode)
           const PopupMenuItem<String>(
             value: 'debug_upgrade_account',
@@ -4290,6 +4405,9 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         case 'save_progress':
                           unawaited(_showSaveProgressBottomSheet());
                           break;
+                        case 'sign_out':
+                          unawaited(_handleSignOut());
+                          break;
                         case 'set_display_name':
                           unawaited(_showSetDisplayNameDialog());
                           break;
@@ -4347,7 +4465,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
                             value: 'save_progress',
                             child: Text('Save your progress…'),
                           )
-                        else
+                        else ...[
                           PopupMenuItem<String>(
                             enabled: false,
                             child: Text(
@@ -4355,6 +4473,11 @@ class _MapScreenState extends ConsumerState<MapScreen>
                               '${IdentityLinkService(client: _captureService.supabaseClient).linkedProviderLabel ?? 'an account'}',
                             ),
                           ),
+                          const PopupMenuItem<String>(
+                            value: 'sign_out',
+                            child: Text('Sign out…'),
+                          ),
+                        ],
                       if (kDebugMode) ...[
                         const PopupMenuDivider(),
                         CheckedPopupMenuItem(
