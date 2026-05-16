@@ -19,6 +19,7 @@ import '../widgets/player_stats_sheet.dart';
 import '../widgets/save_progress_sheet.dart';
 import '../widgets/territory_pressure_card.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
+import 'import_activity_screen.dart';
 import 'map_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -243,9 +244,29 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   Align(
                     alignment: Alignment.centerRight,
-                    child: _DisplayNamePill(
-                      name: _displayName,
-                      onTap: _showDisplayNameDialog,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (FeatureFlags.sweepImportEnabled &&
+                            FeatureFlags.sweepImportGpxEnabled)
+                          IconButton(
+                            tooltip: 'Import activity (GPX)',
+                            icon: const Icon(Icons.cloud_upload_outlined,
+                                color: Colors.white70),
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const ImportActivityScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                        _DisplayNamePill(
+                          name: _displayName,
+                          onTap: _showDisplayNameDialog,
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 8),
