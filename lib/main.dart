@@ -9,6 +9,7 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/theme/game_ui_tokens.dart';
+import 'src/data/services/capture_service.dart';
 import 'src/data/services/founder_badge_service.dart';
 import 'src/presentation/screens/home_screen.dart';
 import 'src/services/notification_service.dart';
@@ -96,6 +97,20 @@ Future<void> main() async {
         founderClaimed = true;
         unawaited(FounderBadgeService().claim());
       }
+
+      // Kick off the anon-or-restored sign-in early so screens that only
+      // observe auth state (e.g. HomeScreen's save-progress card) don't
+      // sit waiting for the user to navigate to MapScreen — which is
+      // where CaptureService.ensureSignedIn() was previously invoked
+      // for the first time. Idempotent: early-returns if a session is
+      // already restored. Fire-and-forget; failures are non-fatal.
+      // See /memories/repo/build26_home_card_no_session.md.
+      unawaited(
+        CaptureService(
+          supabaseClient: Supabase.instance.client,
+          h3Resolution: 9,
+        ).ensureSignedIn(),
+      );
     });
   }, (error, stack) {
     if (firebaseReady) {
