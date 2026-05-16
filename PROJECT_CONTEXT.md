@@ -5,7 +5,7 @@
 > rules we work under, and the state of the codebase. Update it at the
 > end of every shipped build.
 
-Last updated: May 15, 2026 — +24 promoted to closed + external testing.
+Last updated: May 16, 2026 — +25 dogfood follow-ups built (Android AAB ready; pending internal-test dogfood before promotion).
 
 ---
 
@@ -78,10 +78,13 @@ movement. Not AllTrails. Not a pedometer. Not a social app.
 | **+21** | `ead6d7a` | `feat/phase1-5-recap` | Weekly recap data + screen + FCM parser | `weeklyRecapEnabled` |
 | **+22** | `002b604` | `feat/account-link` | Fix Apple sign-in stuck-anonymous menu state + iOS `NSLocationAlwaysAndWhenInUseUsageDescription` | n/a (bugfix) |
 | **+24** | `ce60e9e` | `feat/wakelock-and-onhex-hint` | Wakelock during active session + on-hex auto-capture hint + sign-out menu item + lifecycle/wakelock event logging | `keepScreenOnDuringSessionEnabled` (default ON, kill-switch) |
+| **+25** | `881027b` | `feat/build25-dogfood-followups` | Five dogfood follow-ups: anon re-sign-in race fix, tied-#1 pressure card, do-not-lock tooltip, set-name menu label, home account-link card | n/a (bugfixes + UX) |
 
-All branches +19/+20/+21/+22/+24 are pushed to origin.
+All branches +19/+20/+21/+22/+24 are pushed to origin. **+25 is local-only** (Android AAB built, awaiting internal-test dogfood before push/promote).
 
 **+24 promoted to internal + closed + external testing on May 15, 2026** (cleaned DB beforehand to remove stranded anon UIDs from pre-+24 dev — see `/memories/repo/build25_followups.md` item #1).
+
+**+25 status (May 16, 2026):** Android AAB built, deploying to internal track for dogfood. Hold push + iOS pods + wider promotion until internal-test confirms anon-race fix (#1) actually stops the UID-respawn behavior and the home account-link card (#5) renders correctly on anon cold-start.
 
 **Note:** there is no +23. Version skipped during the +24 build cut.
 
@@ -108,12 +111,17 @@ All branches +19/+20/+21/+22/+24 are pushed to origin.
 | On-hex auto-capture hint | `tile_details_dialog.dart` `isOnThisHex` param + green hint container | always on | shipped +24 |
 | Sign-out menu item | `_handleSignOut()` in `map_screen.dart`, both popup menus, confirmation-gated | always on | shipped +24 |
 | Session lifecycle + wakelock event log | `MapEventType.{sessionBackgrounded,sessionForegrounded,wakelockAcquired,wakelockReleased,importInitiated,importCompleted}` | always on | shipped +24 |
+| Anon session-restore race fix (await `initialSession`/`signedIn` before creating new anon) | `CaptureService.ensureSignedIn()` | always on | shipped +25 |
+| Tied-#1 pressure card (defend headline on `lead == 0`) | `pressureCardSummary()` defend branch + unit test | always on | shipped +25 |
+| Do-not-lock-the-phone session-start tooltip (once-only SnackBar) | `_maybeShowDoNotLockTooltip()` in `map_screen.dart` | gated on `keepScreenOnDuringSessionEnabled` | shipped +25 |
+| Map-screen set-name menu label reflects current name | `_cachedDisplayName` + `_loadCachedDisplayName()` in `map_screen.dart`, both popup menus | always on | shipped +25 |
+| Home-screen account-link affordance (dismissible card, 7-day re-nag) | `_SaveProgressCard` + `_refreshSaveProgressCardVisibility()` in `home_screen.dart` | gated on `accountLinkUiEnabled` | shipped +25 |
 
 ---
 
-## Test inventory (226 tests, all passing as of +24)
+## Test inventory (226 tests, all passing as of +25)
 
-*Note: prior count of "254" in the +21 update was stale; actual `flutter test` reports 226 passing + 1 skipped placeholder. No new tests added in +22 or +24 — both are I/O-bound (auth listener, plugin call, lifecycle hook) and intentionally not unit-tested per discipline rule #6.*
+*Note: prior count of "254" in the +21 update was stale; actual `flutter test` reports 226 passing + 1 skipped placeholder. +22 and +24 added no tests (I/O-bound auth / plugin / lifecycle code, intentionally not unit-tested per discipline rule #6). +25 modified `territory_pressure_card_test.dart` in place — the existing "tie with #2" case was rewritten to assert the new defend headline instead of null. Total count unchanged.*
 
 Each test file guards a specific feature. Run `flutter test test/unit/`
 to execute all. To run one: `flutter test test/unit/<file>.dart`.
@@ -179,17 +187,23 @@ to execute all. To run one: `flutter test test/unit/<file>.dart`.
   3. on-hex info dialog shows the green "keep moving to auto-capture" hint when standing on a non-mine capturable hex.
 - After dogfood: promote to internal, bake ~24h, then closed + external. Reply to tester ONLY after build is in their hands.
 - Reminder: do NOT bundle a Phase 1 flag flip (+19 overlay, +20 badges, +21 recap) into the +24 promote — keep bisect target clean.
+- **Outcome (May 15-16, 2026):** promoted to closed + external. Two independent dogfood signals (Abhay trail walk, wife) confirmed the wakelock UX is poor (screen-on friction). Roadmap updated to make +32 background-location non-conditional — see `/memories/repo/feature_roadmap_post_build16.md` "Dogfood signal on +24 wakelock" section.
+
+### Build +25 — dogfood follow-ups
+- Five small fixes bundled (see `/memories/repo/build25_followups.md` for spec). No backend deploy, no migrations, no flag flips.
+- **Personal dogfood gate (do BEFORE pushing branch / promote):**
+  1. Cold-start the Android build several times — same UID every time. Today's bug: 4 anon UIDs in 2 days on one device. Target: 1 UID, period. (Item #1.)
+  2. Fresh-install on a clean device — home screen shows the new dismissible "Save your progress" card. Dismiss it. Cold-restart — should not re-show for 7 days. (Item #5.)
+  3. Start a session for the first time on this install — SnackBar appears explaining don't-press-lock. Start another session same install — no SnackBar. (Item #3.)
+  4. Open map popup menu after setting a display name — menu shows the name, not "Set display name…". (Item #4.)
+  5. Tied-#1 pressure card requires two-device contrived state — lower priority gate (already unit-tested).
+- After dogfood passes: push branch, `pod install` for iOS, build iOS IPA, promote to internal, bake, then closed + external.
 
 ---
 
 ## Active backlog (small chores)
 
-- **Build +25 — dogfood follow-ups.** Five small items surfaced by
-  the +24 dogfood. See `/memories/repo/build25_followups.md` for full
-  detail. Summary: anon re-sign-in race fix, tied-#1 pressure card,
-  don't-lock-the-phone tooltip, map-screen "Set display name" should
-  show current name, home-screen save-progress affordance for anon
-  users.
+- **Build +25 — BUILT, awaiting internal-test dogfood.** Android AAB on `feat/build25-dogfood-followups` SHA `881027b`. Branch local-only. iOS pods + IPA pending dogfood signal. See `/memories/repo/build25_followups.md` for the 5-item spec and this doc's "Build +25" section for the dogfood gate.
 - **Activity import (GPX / Strava / Garmin / HealthKit / Health
   Connect).** The *real* fix for "my phone slept and I lost my ride."
   Wakelock (+24) is the interim. Multi-build effort — scope before
