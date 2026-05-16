@@ -112,4 +112,29 @@ class FeatureFlags {
   /// causes the wakelock to leak past session-end.
   /// See: /memories/repo/feature_roadmap_post_build16.md (build +24).
   static const bool keepScreenOnDuringSessionEnabled = true;
+
+  // ───────────────────────────────────────────────────────────────────
+  // Sweep + activity import (post build 25).
+  //
+  // Sweep is a Supabase Edge Function that accepts a stream of
+  // (timestamp, lat, lon, accuracy?) points from any source (GPX,
+  // Strava, HealthKit, Health Connect, Garmin) and emits hex captures
+  // with off-trail rejection, dedup, per-tile cooldown, and idempotent
+  // replay.  Imports are DELIBERATELY WEAKER than live sessions on
+  // streak credit, first-capture badges, rivalry multipliers, and
+  // push notifications.
+  // See: docs/sweep_product_decisions.md (LOCKED May 16, 2026).
+  // See: /memories/repo/feature_roadmap_post_build16.md (builds +26..+31).
+  // ───────────────────────────────────────────────────────────────────
+
+  /// Master gate for the entire import UI surface.  When false there is
+  /// no upload button or import entry point anywhere in the app, even
+  /// if a per-source flag below is true.  Default OFF until +26 GPX
+  /// dogfood confirms the round-trip works.
+  static const bool sweepImportEnabled = false;
+
+  /// GPX-specific source flag.  Independent of [sweepImportEnabled] so
+  /// we can ship GPX dogfood while Strava/HealthKit land later.  Both
+  /// flags must be true for the GPX upload UI to render.
+  static const bool sweepImportGpxEnabled = false;
 }
