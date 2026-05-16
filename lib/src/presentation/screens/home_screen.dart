@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -41,6 +42,10 @@ class _HomeScreenState extends State<HomeScreen>
   static const String _prefsSaveProgressCardDismissedAt =
       'home_save_progress_card_dismissed_at_v1';
   static const Duration _saveProgressCardReNagAfter = Duration(days: 7);
+  // Auth subscription so the save-progress card refreshes when the
+  // anon session lands after cold-start. With the +25 ensureSignedIn
+  // race fix, currentUser may still be null when initState fires.
+  StreamSubscription<AuthState>? _authSub;
 
   @override
   void initState() {
@@ -54,6 +59,10 @@ class _HomeScreenState extends State<HomeScreen>
     _loadDisplayName();
     _loadLeaderboardSnapshot();
     _refreshSaveProgressCardVisibility();
+    _authSub = Supabase.instance.client.auth.onAuthStateChange.listen((_) {
+      if (!mounted) return;
+      _refreshSaveProgressCardVisibility();
+    });
   }
 
   Future<void> _refreshSaveProgressCardVisibility() async {
@@ -185,6 +194,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _authSub?.cancel();
     _pulseController.dispose();
     super.dispose();
   }
