@@ -531,6 +531,11 @@ class _MapScreenState extends ConsumerState<MapScreen>
   late final CaptureService _captureService;
   late final MapRenderService _mapRenderService;
   late final MapController _mapController;
+  // Cached display name so the popup menu can show the current name
+  // synchronously (DisplayNameService.getMine() is async). Mirrors the
+  // pattern in home_screen.dart so users see the same label in both
+  // surfaces. See /memories/repo/build25_followups.md item #4.
+  String? _cachedDisplayName;
   late final TrailProgressService _trailProgressService;
   late final TrailSectionProgressService _trailSectionProgressService;
   // Weak-signal grace: tracks whether we already nudged the user about
@@ -715,6 +720,20 @@ class _MapScreenState extends ConsumerState<MapScreen>
     _authSub = Supabase.instance.client.auth.onAuthStateChange.listen(
       _handleAuthStateChange,
     );
+
+    unawaited(_loadCachedDisplayName());
+  }
+
+  Future<void> _loadCachedDisplayName() async {
+    try {
+      final name = await DisplayNameService(
+        client: _captureService.supabaseClient,
+      ).getMine();
+      if (!mounted) return;
+      setState(() => _cachedDisplayName = name);
+    } catch (_) {
+      // Silently ignore — menu falls back to 'Set display name…'.
+    }
   }
 
   @override
@@ -1141,6 +1160,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
     ]);
     _eventLog.log(MapEventType.sessionStarted, 'Session started');
     unawaited(_acquireSessionWakelock());
+    unawaited(_maybeShowDoNotLockTooltip());
     _updateCurrentObjective();
   }
 
@@ -2689,6 +2709,34 @@ class _MapScreenState extends ConsumerState<MapScreen>
     );
   }
 
+  // Shown once, the first time a user starts a session with the
+  // wakelock active. Surfaces the "don't manually lock the phone" gotcha
+  // — wakelock prevents idle auto-lock but cannot override a power-button
+  // press. See /memories/repo/build25_followups.md item #3.
+  static const String _prefsSeenDoNotLockTooltip =
+      'session_do_not_lock_tooltip_seen_v1';
+
+  Future<void> _maybeShowDoNotLockTooltip() async {
+    if (!FeatureFlags.keepScreenOnDuringSessionEnabled) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_prefsSeenDoNotLockTooltip) ?? false) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 8),
+        content: const Text(
+          "Pocket your phone — don't press lock. We'll keep the screen "
+          'on so GPS keeps tracking your ride.',
+        ),
+        action: SnackBarAction(
+          label: 'Got it',
+          onPressed: () {},
+        ),
+      ),
+    );
+    await prefs.setBool(_prefsSeenDoNotLockTooltip, true);
+  }
+
   /// Public capability: lets any player (anonymous or upgraded) claim a
   /// public display name shown on leaderboards.  Backed by the
   /// `profiles` table; RLS ensures users can only edit their own row.
@@ -2759,6 +2807,9 @@ class _MapScreenState extends ConsumerState<MapScreen>
 
     final error = await service.setMine(result);
     if (!mounted) return;
+    if (error == null) {
+      setState(() => _cachedDisplayName = result);
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -4138,9 +4189,13 @@ class _MapScreenState extends ConsumerState<MapScreen>
           ),
         ],
         const PopupMenuDivider(),
-        const PopupMenuItem<String>(
+        PopupMenuItem<String>(
           value: 'set_display_name',
-          child: Text('Set display name…'),
+          child: Text(
+            (_cachedDisplayName != null && _cachedDisplayName!.isNotEmpty)
+                ? _cachedDisplayName!
+                : 'Set display name…',
+          ),
         ),
         if (FeatureFlags.accountLinkUiEnabled)
           if (IdentityLinkService(client: _captureService.supabaseClient)
@@ -4453,9 +4508,14 @@ class _MapScreenState extends ConsumerState<MapScreen>
                         child: const Text('Preview rival hexes'),
                       ),
                       const PopupMenuDivider(),
-                      const PopupMenuItem(
+                      PopupMenuItem(
                         value: 'set_display_name',
-                        child: Text('Set display name…'),
+                        child: Text(
+                          (_cachedDisplayName != null &&
+                                  _cachedDisplayName!.isNotEmpty)
+                              ? _cachedDisplayName!
+                              : 'Set display name…',
+                        ),
                       ),
                       if (FeatureFlags.accountLinkUiEnabled)
                         if (IdentityLinkService(

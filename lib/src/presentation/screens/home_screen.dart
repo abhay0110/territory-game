@@ -7,12 +7,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/constants/seattle_trail_sections.dart';
+import '../../../core/feature_flags.dart';
 import '../../../core/theme/game_ui_tokens.dart';
 import '../../../models/trail_section.dart';
 import '../../data/services/display_name_service.dart';
+import '../../data/services/identity_link_service.dart';
 import '../../data/services/trail_leaderboard_service.dart';
 import '../widgets/frosted_overlay_card.dart';
 import '../widgets/player_stats_sheet.dart';
+import '../widgets/save_progress_sheet.dart';
 import '../widgets/territory_pressure_card.dart';
 import '../widgets/trail_leaderboard_sheet.dart';
 import 'map_screen.dart';
@@ -32,6 +35,12 @@ class _HomeScreenState extends State<HomeScreen>
   Set<String> _capturedHexes = const {};
   String? _displayName;
   TrailLeaderboardSnapshot? _leaderboardSnapshot;
+  // Account-link affordance state. See /memories/repo/
+  // build25_followups.md item #5.
+  bool _saveProgressCardVisible = false;
+  static const String _prefsSaveProgressCardDismissedAt =
+      'home_save_progress_card_dismissed_at_v1';
+  static const Duration _saveProgressCardReNagAfter = Duration(days: 7);
 
   @override
   void initState() {
@@ -44,6 +53,64 @@ class _HomeScreenState extends State<HomeScreen>
     _loadCapturedCount();
     _loadDisplayName();
     _loadLeaderboardSnapshot();
+    _refreshSaveProgressCardVisibility();
+  }
+
+  Future<void> _refreshSaveProgressCardVisibility() async {
+    if (!FeatureFlags.accountLinkUiEnabled) return;
+    final isAnon = IdentityLinkService(
+      client: Supabase.instance.client,
+    ).isCurrentSessionAnonymous;
+    bool show = isAnon;
+    if (show) {
+      final prefs = await SharedPreferences.getInstance();
+      final dismissedAtMs =
+          prefs.getInt(_prefsSaveProgressCardDismissedAt);
+      if (dismissedAtMs != null) {
+        final dismissedAt =
+            DateTime.fromMillisecondsSinceEpoch(dismissedAtMs);
+        if (DateTime.now().difference(dismissedAt) <
+            _saveProgressCardReNagAfter) {
+          show = false;
+        }
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _saveProgressCardVisible = show;
+    });
+  }
+
+  Future<void> _dismissSaveProgressCard() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      _prefsSaveProgressCardDismissedAt,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    if (!mounted) return;
+    setState(() => _saveProgressCardVisible = false);
+  }
+
+  Future<void> _showSaveProgressFromHome() async {
+    if (!FeatureFlags.accountLinkUiEnabled) return;
+    final linkService =
+        IdentityLinkService(client: Supabase.instance.client);
+    if (!linkService.isCurrentSessionAnonymous) {
+      await _refreshSaveProgressCardVisibility();
+      return;
+    }
+    if (!mounted) return;
+    await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => SaveProgressSheet(
+        service: linkService,
+        localProgressCount: _capturedTileCount,
+      ),
+    );
+    // Re-check after the sheet closes — they may have linked.
+    await _refreshSaveProgressCardVisibility();
   }
 
   Future<void> _loadLeaderboardSnapshot() async {
@@ -91,6 +158,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (state == AppLifecycleState.resumed) {
       _loadCapturedCount();
       _loadLeaderboardSnapshot();
+      _refreshSaveProgressCardVisibility();
     }
   }
 
@@ -193,6 +261,13 @@ class _HomeScreenState extends State<HomeScreen>
                             TerritoryPressureCard(
                               leaderboard: _leaderboardSnapshot,
                               onTap: _enterBattleWithLeaderboard,
+                            ),
+                          ],
+                          if (_saveProgressCardVisible) ...[
+                            const SizedBox(height: 12),
+                            _SaveProgressCard(
+                              onSave: _showSaveProgressFromHome,
+                              onDismiss: _dismissSaveProgressCard,
                             ),
                           ],
                           const SizedBox(height: 12),
@@ -1243,6 +1318,84 @@ class _DisplayNameDialogState extends State<_DisplayNameDialog> {
           child: const Text('Save'),
         ),
       ],
+    );
+  }
+}
+
+class _SaveProgressCard extends StatelessWidget {
+  final VoidCallback onSave;
+  final VoidCallback onDismiss;
+
+  const _SaveProgressCard({required this.onSave, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return FrostedOverlayCard(
+      borderRadius: const BorderRadius.all(Radius.circular(16)),
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.cloud_sync_outlined,
+            size: 22,
+            color: GameUiTokens.accentPrimary,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Save your progress',
+                  style: GameUiText.body(
+                    color: GameUiTokens.textHi,
+                    size: 14,
+                    weight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Link an account so your captures survive a reinstall '
+                  'or a new phone.',
+                  style: GameUiText.meta(
+                    color: GameUiTokens.textMid,
+                    size: 12,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.tonal(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 4,
+                      ),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: onSave,
+                    child: const Text('Link account'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Dismiss',
+            icon: const Icon(Icons.close, size: 18),
+            color: GameUiTokens.textMid,
+            onPressed: onDismiss,
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(
+              minWidth: 32,
+              minHeight: 32,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

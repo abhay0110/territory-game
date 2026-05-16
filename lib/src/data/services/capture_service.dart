@@ -170,11 +170,46 @@ class CaptureService {
 
   Future<void> ensureSignedIn() async {
     if (supabaseClient.auth.currentUser != null) return;
+
+    // On cold start, supabase_flutter restores a persisted session from
+    // secure storage ASYNCHRONOUSLY after Supabase.initialize() returns.
+    // For a brief window, `currentUser` is null even though a valid
+    // stored session exists. If we race past that window we call
+    // signInAnonymously() unnecessarily, stranding all prior captures
+    // under an orphan UID and breaking push routing.
+    //
+    // Wait briefly for an initialSession / signedIn / tokenRefreshed
+    // event before creating a new anon. If the timeout fires with still
+    // no user, treat it as a true fresh install.
+    //
+    // See /memories/repo/build25_followups.md item #1.
+    try {
+      await supabaseClient.auth.onAuthStateChange
+          .firstWhere(
+            (data) =>
+                data.event == AuthChangeEvent.initialSession ||
+                data.event == AuthChangeEvent.signedIn ||
+                data.event == AuthChangeEvent.tokenRefreshed,
+          )
+          .timeout(const Duration(seconds: 2), onTimeout: () => _noEvent);
+    } catch (_) {
+      // Stream errored — fall through to currentUser re-check.
+    }
+
+    // Re-check after waiting (event may have arrived OR may have fired
+    // before we subscribed but with the session restoration eventually
+    // landing). Only create a new anon if we still have no user.
+    if (supabaseClient.auth.currentUser != null) return;
     await supabaseClient.auth.signInAnonymously();
     await NotificationService().storeToken(
       Supabase.instance.client.auth.currentUser!.id,
     );
   }
+
+  // Sentinel used by ensureSignedIn() timeout fallback. Cannot be `null`
+  // because `firstWhere` requires a non-null `onTimeout` return value
+  // when its stream element type is non-nullable.
+  static final AuthState _noEvent = AuthState(AuthChangeEvent.signedOut, null);
 
   Future<void> loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();

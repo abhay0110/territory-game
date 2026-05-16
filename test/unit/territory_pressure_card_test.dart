@@ -86,7 +86,8 @@ void main() {
       );
     });
 
-    test('tie with #2 (lead == 0) => null (no smug headline on tie)', () {
+    test('tied for #1 (lead == 0) => defend headline (most-tense state)',
+        () {
       final s = _snap(
         top: [
           _entry(id: 'me', tiles: 30, isYou: true),
@@ -95,7 +96,9 @@ void main() {
         yourRank: 1,
         yourTiles: 30,
       );
-      expect(pressureCardSummary(s), isNull);
+      final r = pressureCardSummary(s)!;
+      expect(r.tone, PressureTone.defend);
+      expect(r.headline, 'Tied for #1 with Bea — capture 1 more to break it');
     });
 
     test('rank #1 with no other players => null', () {

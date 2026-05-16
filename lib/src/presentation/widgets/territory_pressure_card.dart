@@ -56,7 +56,18 @@ PressureCardSummary? pressureCardSummary(TrailLeaderboardSnapshot? snapshot) {
       }
       if (second == null) return null;
       final lead = snapshot.yourTotalTiles - second.ownedTiles;
-      if (lead <= 0) return null; // tie or stale snapshot — say nothing
+      if (lead < 0) return null; // stale/malformed snapshot
+      if (lead == 0) {
+        // Tied for #1 — the most tense state in the game. Don't go silent;
+        // surface it with defend urgency. See /memories/repo/
+        // build25_followups.md item #2.
+        return PressureCardSummary(
+          tone: PressureTone.defend,
+          headline:
+              'Tied for #1 with ${second.displayName} — capture 1 more '
+              'to break it',
+        );
+      }
       return PressureCardSummary(
         tone: PressureTone.defend,
         headline:
