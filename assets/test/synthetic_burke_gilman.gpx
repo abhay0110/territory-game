@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="HexTrail synthetic fixture">
+  <trk>
+    <name>Synthetic Burke-Gilman 10-point segment</name>
+    <trkseg>
+      <trkpt lat="47.6650" lon="-122.3000"><time>2026-05-16T12:00:00Z</time></trkpt>
+      <trkpt lat="47.6651" lon="-122.3001"><time>2026-05-16T12:00:10Z</time></trkpt>
+      <trkpt lat="47.6652" lon="-122.3002"><time>2026-05-16T12:00:20Z</time></trkpt>
+      <trkpt lat="47.6653" lon="-122.3003"><time>2026-05-16T12:00:30Z</time></trkpt>
+      <trkpt lat="47.6654" lon="-122.3004"><time>2026-05-16T12:00:40Z</time></trkpt>
+      <trkpt lat="47.6655" lon="-122.3005"><time>2026-05-16T12:00:50Z</time></trkpt>
+      <trkpt lat="47.6656" lon="-122.3006"><time>2026-05-16T12:01:00Z</time></trkpt>
+      <trkpt lat="47.6657" lon="-122.3007"><time>2026-05-16T12:01:10Z</time></trkpt>
+      <trkpt lat="47.6658" lon="-122.3008"><time>2026-05-16T12:01:20Z</time></trkpt>
+      <trkpt lat="47.6659" lon="-122.3009"><time>2026-05-16T12:01:30Z</time></trkpt>
+      <!-- Two points BEFORE the user's typical install date — should
+           be rejected by the pre-install backfill gate (Q4 locked). -->
+      <trkpt lat="47.6660" lon="-122.3010"><time>2020-01-01T00:00:00Z</time></trkpt>
+      <trkpt lat="47.6661" lon="-122.3011"><time>2020-01-01T00:00:10Z</time></trkpt>
+      <!-- One malformed point — should be skipped by the parser
+           (counted in skipped_bad_coords). -->
+      <trkpt lat="999.9" lon="-122.3012"><time>2026-05-16T12:02:00Z</time></trkpt>
+      <!-- One point with no time — should be skipped by the parser
+           (counted in skipped_no_time). -->
+      <trkpt lat="47.6663" lon="-122.3013"></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
